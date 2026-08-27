@@ -101,8 +101,12 @@ class LoginRelay:
 
     # --- the proxy handler --------------------------------------------------
 
-    async def handle(self, request: web.Request) -> web.StreamResponse:
-        """Proxy one browser request to the right Amazon host and rewrite the reply."""
+    async def handle(self, request: web.Request, **_kwargs: Any) -> web.StreamResponse:
+        """Proxy one browser request to the right Amazon host and rewrite the reply.
+
+        The HA view routes ``{tail:.*}`` and passes it as a keyword argument; we
+        derive the path from the request ourselves, so extra kwargs are ignored.
+        """
         if self._client is None:
             await self.async_start()
 
