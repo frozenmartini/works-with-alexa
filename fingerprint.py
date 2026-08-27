@@ -66,23 +66,26 @@ def generate_map_md() -> str:
     return base64.b64encode(literal.encode("utf-8")).decode("ascii")
 
 
-def generate_device_id() -> str:
-    """A 92-char device id for ``openid.oa2.client_id=device:<deviceId>``.
-
-    16 random bytes -> uppercase hex (32 ASCII) -> hex-encode that ASCII again
-    (64) -> append the already-hex-encoded device-type suffix (28). The suffix
-    must be appended *once* hex-encoded, not twice.
-    """
-    serial_ascii = secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex().upper()
-    return serial_ascii.encode("ascii").hex() + _DEVICE_TYPE_SUFFIX
-
-
 def generate_device_serial() -> str:
-    """16 random bytes as hex -- the persisted ``device_serial`` for /auth/register.
+    """16 random bytes as uppercase hex (32 chars) -- the persisted serial.
 
-    Distinct from :func:`generate_device_id`, which draws its own random bytes.
+    This single value seeds both the registration ``device_serial`` and the
+    ``device_id`` derived from it; they must stay linked, because the signin
+    URL's ``client_id`` has to equal the one sent to ``/auth/register``. Kept
+    uppercase to match the reference implementations.
     """
-    return secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex()
+    return secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex().upper()
+
+
+def derive_device_id(device_serial: str) -> str:
+    """The 92-char device id for ``openid.oa2.client_id=device:<deviceId>``.
+
+    Hex-encode the serial's ASCII (32 -> 64), then append the already-hex
+    device-type suffix (28). The suffix is appended *once* hex-encoded; alexapy
+    hex-encodes the whole concatenation, double-encoding the suffix into a
+    120-char id with no device-type marker -- the suspected login block.
+    """
+    return device_serial.encode("ascii").hex() + _DEVICE_TYPE_SUFFIX
 
 
 def generate_pkce() -> tuple[str, str]:
@@ -97,12 +100,16 @@ def generate_pkce() -> tuple[str, str]:
 
 
 def new_fingerprint() -> dict[str, str]:
-    """Mint a complete fingerprint set to persist at first registration."""
+    """Mint a complete fingerprint set to persist at first registration.
+
+    ``device_id`` is derived from ``device_serial`` so the two never drift.
+    """
+    serial = generate_device_serial()
     return {
         "frc": generate_frc(),
         "map_md": generate_map_md(),
-        "device_id": generate_device_id(),
-        "device_serial": generate_device_serial(),
+        "device_serial": serial,
+        "device_id": derive_device_id(serial),
     }
 
 
