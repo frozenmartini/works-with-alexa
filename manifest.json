@@ -1,0 +1,23 @@
+{
+  "domain": "works_with_alexa",
+  "name": "Works with Alexa",
+  "codeowners": [
+    "@frozenmartini"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http"
+  ],
+  "documentation": "https://github.com/frozenmartini/works-with-alexa",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/frozenmartini/works-with-alexa/issues",
+  "loggers": [
+    "custom_components.works_with_alexa"
+  ],
+  "requirements": [
+    "alexapy==1.29.25",
+    "authcaptureproxy>=1.3.5"
+  ],
+  "version": "0.1.0"
+}
