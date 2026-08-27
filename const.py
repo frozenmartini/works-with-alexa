@@ -90,6 +90,19 @@ MIN_SCAN_INTERVAL: Final = 15
 # addition to the user-editable CONF_READ_ONLY_ENDPOINTS option.
 BLOCKED_MANUFACTURERS: Final = frozenset({"kohler"})
 
+# Writable entities are only created for endpoints in these display categories.
+# The account exposes 73 endpoints using the same range/mode/toggle mechanism,
+# including an INTERIOR_BLIND that is explicitly not a target of this
+# integration (ref/03, ref/06) -- a generic control platform would silently
+# start driving it. Read-only sensors are not gated this way; reading anything
+# is harmless.
+CONTROLLABLE_CATEGORIES: Final = frozenset({"FAN"})
+
+# Mode features are addressed by instance but classified by friendlyName: the
+# Window Fan's instances are bare integers whose numbering means nothing, and
+# only the label says which one is speed (ref/07).
+FAN_SPEED_LABELS: Final = ("fan speed", "speed")
+
 # Token refresh happens this many seconds before the access token actually expires.
 TOKEN_EXPIRY_MARGIN: Final = 300
 
