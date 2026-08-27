@@ -30,22 +30,33 @@ FEATURE_CONNECTIVITY = "connectivity"
 FEATURE_ENDPOINT_HEALTH = "endpointHealth"
 
 
-# The property a given feature type reports its current value under.
-_PRIMARY_PROPERTY = {
-    FEATURE_POWER: "powerState",
-    FEATURE_MODE: "mode",
-    FEATURE_RANGE: "rangeValue",
-    FEATURE_TOGGLE: "toggleState",
-    FEATURE_THERMOSTAT: "targetSetpoint",
-    FEATURE_TEMPERATURE_SENSOR: "temperature",
-    FEATURE_CONNECTIVITY: "connectivity",
+# The property name a feature type reports its current value under.
+#
+# Two naming conventions are accepted per feature. The Homebridge plugins'
+# query document selects the ``*Value``-suffixed names (``powerStateValue``,
+# ``toggleStateValue``, ``thermostatModeValue``) while the live captures in
+# ``ref/07``/``ref/08`` are written up with the bare names. The raw response
+# JSON was never committed, so rather than guess which the wire actually uses,
+# both are tried. See ``threads/002`` Q5 -- once a real capture settles it, the
+# losing spelling can be dropped.
+_PRIMARY_PROPERTIES = {
+    FEATURE_POWER: ("powerStateValue", "powerState"),
+    FEATURE_MODE: ("modeValue", "mode"),
+    FEATURE_RANGE: ("rangeValue",),
+    FEATURE_TOGGLE: ("toggleStateValue", "toggleState"),
+    FEATURE_THERMOSTAT: ("targetSetpoint", "value", "thermostatModeValue"),
+    FEATURE_TEMPERATURE_SENSOR: ("temperature", "value"),
+    FEATURE_CONNECTIVITY: ("connectivity", "reachability"),
 }
 
 # Tried in order for feature types not listed above.
 _PROPERTY_FALLBACK = (
+    "powerStateValue",
     "powerState",
+    "modeValue",
     "mode",
     "rangeValue",
+    "toggleStateValue",
     "toggleState",
     "targetSetpoint",
     "temperature",
@@ -79,7 +90,7 @@ class Feature:
     @property
     def friendly_name(self) -> str | None:
         """Human label, e.g. ``Fan Speed``. The instance alone does not say."""
-        return self.configuration.get("friendlyName")
+        return _text(self.configuration.get("friendlyName"))
 
     @property
     def writable(self) -> bool:
@@ -139,13 +150,14 @@ class Feature:
         The property carrying the value is named after the feature, so prefer the
         name this feature type is known to use before falling back to a scan.
         """
-        preferred = _PRIMARY_PROPERTY.get(self.name)
-        if preferred and preferred in self.properties:
-            return _unwrap(self.properties[preferred])
-        for prop in _PROPERTY_FALLBACK:
+        for prop in self._candidate_properties:
             if prop in self.properties:
                 return _unwrap(self.properties[prop])
         return None
+
+    @property
+    def _candidate_properties(self) -> tuple[str, ...]:
+        return _PRIMARY_PROPERTIES.get(self.name, ()) + _PROPERTY_FALLBACK
 
     @property
     def scale(self) -> str | None:
@@ -155,9 +167,11 @@ class Feature:
         ``CELSIUS``/``KELVIN``. Bare ``range`` features do not -- see
         :attr:`unit_of_measure`.
         """
-        preferred = _PRIMARY_PROPERTY.get(self.name)
-        raw = self.properties.get(preferred) if preferred else None
-        return raw.get("scale") if isinstance(raw, dict) else None
+        for prop in self._candidate_properties:
+            raw = self.properties.get(prop)
+            if isinstance(raw, dict) and "scale" in raw:
+                return raw["scale"]
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,10 +289,32 @@ def _flatten_properties(raw: Any) -> dict[str, Any]:
 
 
 def _unwrap(value: Any) -> Any:
-    """Unwrap ``{value: ..., scale: ...}`` style wrappers to a bare value."""
-    if isinstance(value, dict) and "value" in value:
-        return value["value"]
+    """Reduce a wrapped property to its bare value.
+
+    Values arrive wrapped to varying depths: ``{"value": 50}`` for a range,
+    ``{"value": 38.8, "scale": "CELSIUS"}`` for a temperature, and occasionally
+    ``{"value": {"text": "..."}}`` for a label. Unwrap until something scalar
+    falls out.
+    """
+    seen = 0
+    while isinstance(value, dict) and seen < 4:
+        if "text" in value:
+            return value["text"]
+        if "value" not in value:
+            return None
+        value = value["value"]
+        seen += 1
     return value
+
+
+def _text(value: Any) -> str | None:
+    """Read a label that may be a bare string or a ``{value: {text: ...}}`` blob."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    unwrapped = _unwrap(value)
+    return unwrapped if isinstance(unwrapped, str) else None
 
 
 def _label(option: dict[str, Any]) -> str:
@@ -287,8 +323,8 @@ def _label(option: dict[str, Any]) -> str:
         ("modeResources", "friendlyName"),
         ("friendlyName",),
     ):
-        found = _get(option, *path)
-        if isinstance(found, str) and found:
+        found = _text(_get(option, *path))
+        if found:
             return found
     return str(option.get("value"))
 
