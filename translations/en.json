@@ -58,7 +58,8 @@
       "already_configured": "This Amazon account is already set up.",
       "proxy_missing": "The login session was lost. Start again.",
       "no_alexa_media": "No Alexa Media Player account with a stored sign-in was found.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for."
     }
   },
   "options": {

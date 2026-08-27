@@ -25,6 +25,7 @@ from yarl import URL
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import (
+    SOURCE_REAUTH,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -177,6 +178,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             options.insert(1, "import_alexa_media")
         return self.async_show_menu(step_id="user", menu_options=options)
 
+    def _default_hass_url(self) -> str:
+        """This instance's own URL, for the browser to reach the relay on."""
+        try:
+            return get_url(self.hass, allow_external=False)
+        except NoURLAvailableError:
+            return DEFAULT_HASS_URL
+
     async def async_step_login(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -187,17 +195,14 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
             return await self.async_step_start_proxy()
 
-        try:
-            default_hass_url = get_url(self.hass, allow_external=False)
-        except NoURLAvailableError:
-            default_hass_url = DEFAULT_HASS_URL
-
         schema = vol.Schema(
             {
                 vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
                     SUPPORTED_DOMAINS
                 ),
-                vol.Required(CONF_HASS_URL, default=default_hass_url): str,
+                vol.Required(
+                    CONF_HASS_URL, default=self._default_hass_url()
+                ): str,
                 vol.Required(
                     CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
                 ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
@@ -456,6 +461,21 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # after the user has worked through a long list.
         unique_id = email or credentials["device_serial"]
         await self.async_set_unique_id(unique_id)
+
+        if self.source == SOURCE_REAUTH:
+            # Re-authenticating replaces the credentials on the existing entry.
+            # Treating it as a new entry would abort as already-configured, which
+            # is what made reauth impossible to complete.
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(),
+                data_updates={
+                    CONF_DEVICE_SERIAL: credentials["device_serial"],
+                    CONF_REFRESH_TOKEN: credentials["refresh_token"],
+                    CONF_MAC_DMS: credentials["mac_dms"],
+                },
+            )
+
         self._abort_if_unique_id_configured()
 
         self._credentials = credentials
@@ -516,6 +536,10 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         options: dict[str, Any] = {
             CONF_SCAN_INTERVAL: self._config[CONF_SCAN_INTERVAL]
         }
+        # Kept so a later reauth can stand the relay back up on the same URL the
+        # browser reached the first time. Only the sign-in path collects one.
+        if CONF_HASS_URL in self._config:
+            options[CONF_HASS_URL] = self._config[CONF_HASS_URL]
         # Absent entirely means "everything", which is what a failed listing
         # falls back to. An empty list means the user deliberately chose none.
         if CONF_INCLUDE_ENDPOINTS in self._config:
@@ -568,20 +592,28 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return None
 
     def _retry_user(self, reason: str) -> ConfigFlowResult:
-        """Return to the first form with an error rather than aborting."""
+        """Return to the first form with an error rather than aborting.
+
+        The previous answers are kept as the defaults: this form is shown after
+        a failed sign-in, and making the user re-derive their own URL from
+        scratch is the wrong moment to do it.
+        """
+        previous_url = self._config.get(CONF_URL, DEFAULT_DOMAIN)
+        previous_hass_url = self._config.get(CONF_HASS_URL) or self._default_hass_url()
+        previous_interval = self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         self._config = {}
         return self.async_show_form(
             step_id="login",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
+                    vol.Required(CONF_URL, default=previous_url): vol.In(
                         SUPPORTED_DOMAINS
                     ),
                     vol.Required(
-                        CONF_HASS_URL, default=DEFAULT_HASS_URL
+                        CONF_HASS_URL, default=previous_hass_url
                     ): str,
                     vol.Required(
-                        CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                        CONF_SCAN_INTERVAL, default=previous_interval
                     ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
                 }
             ),
@@ -601,10 +633,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         if user_input is None:
             return self.async_show_form(step_id="reauth_confirm")
-        # Reuse the reauth entry's stored hass_url and scan interval.
+        # Reuse the reauth entry's stored hass_url and scan interval. An entry
+        # created by one of the import paths never collected a hass_url, so fall
+        # back to this instance's own URL rather than a constant that is only
+        # right by luck.
         entry = self._get_reauth_entry()
         self._config[CONF_HASS_URL] = entry.options.get(
-            CONF_HASS_URL, DEFAULT_HASS_URL
+            CONF_HASS_URL, self._default_hass_url()
         )
         self._config[CONF_SCAN_INTERVAL] = entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
