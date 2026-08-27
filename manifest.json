@@ -15,8 +15,6 @@
   "loggers": [
     "custom_components.works_with_alexa"
   ],
-  "requirements": [
-    "authcaptureproxy>=1.3.7"
-  ],
+  "requirements": [],
   "version": "0.1.0"
 }

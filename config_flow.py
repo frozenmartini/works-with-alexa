@@ -7,7 +7,7 @@ server (no separate port), and Amazon's final redirect bounces the browser back
 to a callback view that resumes this flow.
 
 Structure follows the proven ``alexa_media`` flow; the difference that matters is
-:class:`~.auth_proxy.LoginProxy`, which drives the relay with our own correct
+:class:`~.auth_proxy.LoginRelay`, our own same-origin rewriting proxy driven with the correct
 device fingerprint instead of alexapy's blocked one.
 """
 
@@ -33,7 +33,7 @@ from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
-from .auth_proxy import LoginProxy
+from .auth_proxy import LoginRelay
 from .const import (
     AUTH_CALLBACK_NAME,
     AUTH_CALLBACK_PATH,
@@ -64,7 +64,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     # Class-level so a second flow reuses one relay rather than double-mounting.
-    proxy: LoginProxy | None = None
+    proxy: LoginRelay | None = None
     proxy_view: "WorksWithAlexaProxyView | None" = None
 
     def __init__(self) -> None:
@@ -108,20 +108,26 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Stand up the relay and hand the browser off to Amazon's sign-in."""
         hass_url = self._config[CONF_HASS_URL]
-        proxy_url = URL(hass_url).with_path(AUTH_PROXY_PATH)
+        # The browser-facing base the relay writes into rewritten URLs. It must
+        # end in "/" and carry the full external origin + mount path.
+        proxy_base = f"{hass_url}{AUTH_PROXY_PATH}/"
 
-        WorksWithAlexaConfigFlow.proxy = LoginProxy(
-            self._config[CONF_URL], proxy_url, fingerprint=self._fingerprint
+        WorksWithAlexaConfigFlow.proxy = LoginRelay(
+            self._config[CONF_URL],
+            AUTH_PROXY_PATH,
+            proxy_base,
+            fingerprint=self._fingerprint,
         )
+        await WorksWithAlexaConfigFlow.proxy.async_start()
         self._fingerprint = WorksWithAlexaConfigFlow.proxy.fingerprint
 
         if not WorksWithAlexaConfigFlow.proxy_view:
             WorksWithAlexaConfigFlow.proxy_view = WorksWithAlexaProxyView(
-                WorksWithAlexaConfigFlow.proxy._proxy.all_handler
+                WorksWithAlexaConfigFlow.proxy.handle
             )
         else:
             WorksWithAlexaConfigFlow.proxy_view.handler = (
-                WorksWithAlexaConfigFlow.proxy._proxy.all_handler
+                WorksWithAlexaConfigFlow.proxy.handle
             )
         self.hass.http.register_view(WorksWithAlexaCallbackView())
         self.hass.http.register_view(WorksWithAlexaConfigFlow.proxy_view)
@@ -131,7 +137,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             .with_path(AUTH_CALLBACK_PATH)
             .with_query({"flow_id": self.flow_id})
         )
-        proxy_target = WorksWithAlexaConfigFlow.proxy.access_url.with_query(
+        # The browser lands on the relay root, which serves the signin page.
+        proxy_target = URL(proxy_base).with_query(
             {"config_flow_id": self.flow_id, "callback_url": str(callback_url)}
         )
         return self.async_external_step(
