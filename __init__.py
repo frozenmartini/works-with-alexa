@@ -24,15 +24,14 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_URL,
 )
+from .coordinator import WorksWithAlexaCoordinator
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Platforms come online once the coordinator lands; forwarding here is then a
-# one-line change.
-PLATFORMS: list[Platform] = []
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
-type WorksWithAlexaConfigEntry = ConfigEntry[AmazonAlexaSession]
+type WorksWithAlexaConfigEntry = ConfigEntry[WorksWithAlexaCoordinator]
 
 
 async def async_setup_entry(
@@ -63,7 +62,12 @@ async def async_setup_entry(
             data={**entry.data, CONF_REFRESH_TOKEN: session.refresh_token},
         )
 
-    entry.runtime_data = session
+    coordinator = WorksWithAlexaCoordinator(hass, entry, session)
+    # Fail setup here rather than after the platforms are up, so a bad first poll
+    # surfaces as a retry instead of a shell of unavailable entities.
+    await coordinator.async_config_entry_first_refresh()
+
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
