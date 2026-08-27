@@ -16,8 +16,7 @@
     "custom_components.works_with_alexa"
   ],
   "requirements": [
-    "alexapy==1.29.25",
-    "authcaptureproxy>=1.3.5"
+    "authcaptureproxy>=1.3.7"
   ],
   "version": "0.1.0"
 }
