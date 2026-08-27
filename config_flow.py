@@ -32,6 +32,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.network import NoURLAvailableError, get_url
+from homeassistant.helpers.storage import Store
 
 from .auth_proxy import LoginRelay
 from .const import (
@@ -56,6 +57,11 @@ from .const import (
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
+
+# The device fingerprint is persisted here so it is reused across login attempts
+# rather than churning (threads/002 Q9). Not secret, but device-identifying.
+FINGERPRINT_STORAGE_VERSION = 1
+FINGERPRINT_STORAGE_KEY = f"{DOMAIN}_fingerprint"
 
 
 class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -112,14 +118,24 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # end in "/" and carry the full external origin + mount path.
         proxy_base = f"{hass_url}{AUTH_PROXY_PATH}/"
 
+        # Reuse one device fingerprint across every attempt. Minting a fresh one
+        # per try makes each retry look like a brand-new device registering on
+        # the account -- a velocity signal that triggers Amazon's proof-of-work
+        # challenge (threads/002 Q9). Persist it so it survives separate flows.
+        store: Store = Store(self.hass, FINGERPRINT_STORAGE_VERSION, FINGERPRINT_STORAGE_KEY)
+        fingerprint = self._fingerprint or await store.async_load()
+
         WorksWithAlexaConfigFlow.proxy = LoginRelay(
             self._config[CONF_URL],
             AUTH_PROXY_PATH,
             proxy_base,
-            fingerprint=self._fingerprint,
+            fingerprint=fingerprint,
         )
         await WorksWithAlexaConfigFlow.proxy.async_start()
         self._fingerprint = WorksWithAlexaConfigFlow.proxy.fingerprint
+        # Persist a freshly-minted fingerprint so the next attempt reuses it.
+        if fingerprint != self._fingerprint:
+            await store.async_save(self._fingerprint)
 
         if not WorksWithAlexaConfigFlow.proxy_view:
             WorksWithAlexaConfigFlow.proxy_view = WorksWithAlexaProxyView(
