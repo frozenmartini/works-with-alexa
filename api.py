@@ -384,7 +384,6 @@ class AmazonAlexaSession:
             endpoint_id, feature_name, operation, instance=instance, payload=payload
         )
         data = await self._async_graphql(
-            SET_ENDPOINT_FEATURES_MUTATION,
-            {"input": {"featureControlRequests": [request]}},
+            SET_ENDPOINT_FEATURES_MUTATION, {"r": [request]}
         )
         return check_control_result(data, endpoint_id)

@@ -139,8 +139,10 @@ class Feature:
         Note this carries no Celsius/Fahrenheit discriminator, unlike the
         ``scale`` field on thermostat and temperatureSensor features. Callers
         must handle scale per feature type (ref/07, open question Q3).
+
+        Arrives as a ``{value:{text}}`` wrapper; a bare string is tolerated.
         """
-        return self.configuration.get("unitOfMeasure")
+        return _text(self.configuration.get("unitOfMeasure"))
 
     # --- current value ------------------------------------------------------
     @property
@@ -247,9 +249,11 @@ def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
         endpoint_id=endpoint_id,
         friendly_name=raw.get("friendlyName") or endpoint_id,
         display_category=_get(raw, "displayCategories", "primary", "value"),
-        manufacturer=raw.get("manufacturer"),
-        model=raw.get("model"),
-        serial_number=raw.get("serialNumber"),
+        # model / manufacturer arrive as {value:{text}} wrappers, though a bare
+        # string is tolerated so fixtures and older captures still parse.
+        manufacturer=_text(raw.get("manufacturer")),
+        model=_text(raw.get("model")),
+        serial_number=_text(raw.get("serialNumber")),
         features=features,
     )
 
