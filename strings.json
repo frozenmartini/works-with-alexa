@@ -38,7 +38,16 @@
       },
       "select_devices": {
         "title": "Choose devices",
-        "description": "Your Amazon account has {count} devices. Tick the ones you want in Home Assistant. You can change this later without signing in again.",
+        "description": "{count} devices on your Amazon account can be added to Home Assistant. You can change this later without signing in again.",
+        "menu_options": {
+          "devices_pick": "Choose devices individually",
+          "devices_all": "Add all devices",
+          "devices_none": "Add none for now"
+        }
+      },
+      "devices_pick": {
+        "title": "Choose devices",
+        "description": "Tick each of the {count} devices you want in Home Assistant. Anything left unticked is not added.",
         "data": {
           "include_endpoints": "Devices"
         }
@@ -66,9 +75,25 @@
     "step": {
       "init": {
         "title": "Works with Alexa options",
-        "description": "Unticking a device removes its entities. Changes reload the integration.",
+        "description": "Changes reload the integration.",
         "data": {
-          "scan_interval": "Polling interval (seconds)",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      },
+      "devices": {
+        "title": "Devices",
+        "description": "{count} devices are available. Removing a device deletes its entities.",
+        "menu_options": {
+          "devices_keep": "Leave devices as they are",
+          "devices_pick": "Choose devices individually",
+          "devices_all": "Add all devices",
+          "devices_none": "Remove all devices"
+        }
+      },
+      "devices_pick": {
+        "title": "Choose devices",
+        "description": "Tick each of the {count} devices you want. Unticking one deletes its entities.",
+        "data": {
           "include_endpoints": "Devices"
         }
       }

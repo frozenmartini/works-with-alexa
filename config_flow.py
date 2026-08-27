@@ -165,6 +165,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._fingerprint: dict[str, str] | None = None
         self._credentials: dict[str, Any] = {}
         self._email: str | None = None
+        self._choices: dict[str, str] = {}
 
     # --- entry point --------------------------------------------------------
 
@@ -492,16 +493,11 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_select_devices(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose which of the account's devices become entities.
+        """Take all devices, none, or pick through them.
 
-        An Alexa account commonly carries dozens of endpoints, most of which the
-        user has no interest in seeing in Home Assistant. Selecting here rather
-        than importing everything keeps the entity list to what was asked for.
+        A form cannot carry its own buttons, but menu options are buttons, so
+        the bulk choices live here and the checkbox list sits behind "choose".
         """
-        if user_input is not None:
-            self._config[CONF_INCLUDE_ENDPOINTS] = user_input[CONF_INCLUDE_ENDPOINTS]
-            return self._create_entry()
-
         try:
             endpoints = await self._async_endpoints(self._credentials)
         except WorksWithAlexaError as err:
@@ -511,21 +507,52 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("Could not list devices to choose from: %s", err)
             return self._create_entry()
 
-        choices = endpoint_choices(endpoints)
-        if not choices:
+        self._choices = endpoint_choices(endpoints)
+        if not self._choices:
+            return self._create_entry()
+
+        return self.async_show_menu(
+            step_id="select_devices",
+            menu_options=["devices_pick", "devices_all", "devices_none"],
+            description_placeholders={"count": str(len(self._choices))},
+        )
+
+    async def async_step_devices_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Tick the devices to bring in, starting from none."""
+        if user_input is not None:
+            self._config[CONF_INCLUDE_ENDPOINTS] = user_input[CONF_INCLUDE_ENDPOINTS]
             return self._create_entry()
 
         return self.async_show_form(
-            step_id="select_devices",
+            step_id="devices_pick",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_INCLUDE_ENDPOINTS, default=list(choices)
-                    ): cv.multi_select(choices)
+                    # Starts empty: opting in beats opting out when the account
+                    # carries far more devices than anyone wants in Home
+                    # Assistant. Optional so submitting nothing is allowed.
+                    vol.Optional(
+                        CONF_INCLUDE_ENDPOINTS, default=list
+                    ): cv.multi_select(self._choices)
                 }
             ),
-            description_placeholders={"count": str(len(choices))},
+            description_placeholders={"count": str(len(self._choices))},
         )
+
+    async def async_step_devices_all(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Bring in every device the account offers."""
+        self._config[CONF_INCLUDE_ENDPOINTS] = list(self._choices)
+        return self._create_entry()
+
+    async def async_step_devices_none(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set the account up with no devices; add them later from options."""
+        self._config[CONF_INCLUDE_ENDPOINTS] = []
+        return self._create_entry()
 
     def _create_entry(self) -> ConfigFlowResult:
         """Write the entry from what the flow has gathered."""
@@ -662,41 +689,107 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
 class WorksWithAlexaOptionsFlow(OptionsFlow):
     """Runtime options that need no reauth."""
 
+    def __init__(self) -> None:
+        self._scan_interval: int = DEFAULT_SCAN_INTERVAL
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Polling interval, then the same all/none/pick buttons as setup."""
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            self._scan_interval = user_input[CONF_SCAN_INTERVAL]
+            if not self._endpoint_choices():
+                # Entry not loaded, so there is no device list to offer. Saving
+                # the interval alone must not wipe the stored selection.
+                return self._save()
+            return await self.async_step_devices()
 
         current = self.config_entry.options
-        schema: dict[Any, Any] = {
-            vol.Required(
-                CONF_SCAN_INTERVAL,
-                default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-            ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-        }
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SCAN_INTERVAL,
+                    default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
 
-        # The device picker is offered only while the entry is loaded, because
-        # the list comes from the coordinator's last poll. Without it the form
-        # still works for the polling interval.
+    async def async_step_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         choices = self._endpoint_choices()
-        if choices:
-            selected = current.get(CONF_INCLUDE_ENDPOINTS)
-            if selected is None:
-                default = list(choices)
-            else:
-                # A stored selection can name endpoints the picker no longer
-                # offers -- one saved before the list was narrowed to real
-                # devices, or a device since removed from the account. Defaults
-                # outside the offered set are not selectable, so drop them.
-                default = [
-                    endpoint_id for endpoint_id in choices if endpoint_id in selected
-                ]
-            schema[
-                vol.Required(CONF_INCLUDE_ENDPOINTS, default=default)
-            ] = cv.multi_select(choices)
+        return self.async_show_menu(
+            step_id="devices",
+            menu_options=[
+                "devices_keep",
+                "devices_pick",
+                "devices_all",
+                "devices_none",
+            ],
+            description_placeholders={"count": str(len(choices))},
+        )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
+    async def async_step_devices_keep(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Save the interval without touching the device selection."""
+        return self._save()
+
+    async def async_step_devices_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the selection, starting from what is currently in use."""
+        choices = self._endpoint_choices()
+        if user_input is not None:
+            return self._save(user_input[CONF_INCLUDE_ENDPOINTS])
+
+        selected = self.config_entry.options.get(CONF_INCLUDE_ENDPOINTS)
+        if selected is None:
+            # No selection recorded means everything is in use today, so that is
+            # what the form must show -- otherwise saving would silently drop
+            # devices the user never chose to remove.
+            default = list(choices)
+        else:
+            # A stored selection can name endpoints the picker no longer offers:
+            # one saved before the list was narrowed to real devices, or a device
+            # since removed from the account. Defaults outside the offered set
+            # are not selectable, so drop them.
+            default = [
+                endpoint_id for endpoint_id in choices if endpoint_id in selected
+            ]
+
+        return self.async_show_form(
+            step_id="devices_pick",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_INCLUDE_ENDPOINTS, default=default
+                    ): cv.multi_select(choices)
+                }
+            ),
+            description_placeholders={"count": str(len(choices))},
+        )
+
+    async def async_step_devices_all(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self._save(list(self._endpoint_choices()))
+
+    async def async_step_devices_none(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self._save([])
+
+    def _save(self, include: list[str] | None = None) -> ConfigFlowResult:
+        """Write options, keeping whatever this pass did not touch."""
+        options: dict[str, Any] = {
+            **self.config_entry.options,
+            CONF_SCAN_INTERVAL: self._scan_interval,
+        }
+        if include is not None:
+            options[CONF_INCLUDE_ENDPOINTS] = include
+        return self.async_create_entry(data=options)
 
     def _endpoint_choices(self) -> dict[str, str]:
         """Device labels from the coordinator, or nothing if it is not loaded."""
