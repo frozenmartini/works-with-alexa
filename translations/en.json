@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Works with Alexa",
+        "description": "Sign in to Amazon to control your Alexa-only devices. After you submit, a window opens for Amazon's own sign-in (including any two-factor step). The Home Assistant URL below must be the one your browser can reach.",
+        "data": {
+          "url": "Amazon marketplace",
+          "hass_url": "Home Assistant URL (as your browser reaches it)",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Amazon",
+        "description": "Your stored credentials are no longer accepted. Submit to sign in again; your existing configuration is kept."
+      }
+    },
+    "error": {
+      "login_failed": "Login did not complete. Make sure you finished Amazon's sign-in, and try from a browser not already signed in to Amazon.",
+      "cannot_connect": "Could not reach Amazon. Check your connection and try again."
+    },
+    "abort": {
+      "already_configured": "This Amazon account is already set up.",
+      "proxy_missing": "The login session was lost. Start again.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Works with Alexa options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    }
+  }
+}
