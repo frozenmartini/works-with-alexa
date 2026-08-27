@@ -14,6 +14,7 @@ device fingerprint instead of alexapy's blocked one.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 from typing import Any
 
@@ -40,6 +41,7 @@ from .const import (
     AUTH_CALLBACK_PATH,
     AUTH_PROXY_NAME,
     AUTH_PROXY_PATH,
+    CONF_CREDENTIALS,
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
     CONF_HASS_URL,
@@ -57,6 +59,50 @@ from .const import (
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parse_bundle(raw: str) -> tuple[dict[str, Any], str | None]:
+    """Read a credential bundle into the shape :meth:`_async_verify` expects.
+
+    Accepts either the alexa-cookie2 wrapper (``{"cookieData": {...}}``) or the
+    inner object on its own. Returns the credentials plus the marketplace the
+    bundle was minted against, which is authoritative when present: the cookies
+    are only valid for the domain that issued them (ref/00 §2).
+
+    Raises ValueError with a reason that is safe to log -- no field values.
+    """
+    try:
+        parsed = json.loads(raw)
+    except ValueError as err:
+        raise ValueError(f"not valid JSON: {err}") from err
+    if not isinstance(parsed, dict):
+        raise ValueError("top level is not an object")
+
+    data = parsed.get("cookieData", parsed)
+    if not isinstance(data, dict):
+        raise ValueError("cookieData is not an object")
+
+    missing = [
+        key
+        for key in ("refreshToken", "macDms", "deviceSerial")
+        if not data.get(key)
+    ]
+    if missing:
+        raise ValueError(f"missing {', '.join(missing)}")
+    if not isinstance(data["macDms"], dict):
+        raise ValueError("macDms is not an object")
+
+    domain = data.get("amazonPage")
+    if domain not in SUPPORTED_DOMAINS:
+        domain = None
+
+    credentials = {
+        "refresh_token": data["refreshToken"],
+        "device_serial": data["deviceSerial"],
+        "mac_dms": data["macDms"],
+    }
+    return credentials, domain
+
 
 # The device fingerprint is persisted here so it is reused across login attempts
 # rather than churning (threads/002 Q9). Not secret, but device-identifying.
@@ -82,6 +128,14 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Offer a fresh Amazon sign-in or adoption of existing credentials."""
+        return self.async_show_menu(
+            step_id="user", menu_options=["login", "import_token"]
+        )
+
+    async def async_step_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Collect the marketplace domain and the URL the browser will reach."""
         if user_input is not None:
             self._config[CONF_URL] = user_input[CONF_URL]
@@ -105,7 +159,62 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
                 ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema)
+        return self.async_show_form(step_id="login", data_schema=schema)
+
+    # --- credential import --------------------------------------------------
+
+    async def async_step_import_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Adopt an account from an already-minted credential bundle.
+
+        The refresh token is the durable credential; the access token, cookies
+        and CSRF are rebuilt from it on every start (ref/10). So an account
+        registered elsewhere can be adopted here without a second device
+        registration -- and without the sign-in relay, which is what makes this
+        the safe path when Amazon is challenging fresh registrations.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                credentials, bundle_domain = _parse_bundle(
+                    user_input[CONF_CREDENTIALS]
+                )
+            except ValueError as err:
+                _LOGGER.warning("Credential bundle rejected: %s", err)
+                errors["base"] = "invalid_bundle"
+            else:
+                self._config[CONF_URL] = bundle_domain or user_input[CONF_URL]
+                self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+                # Unlike the login path there is no relay handshake to prove the
+                # credentials work, so exercise them once here rather than
+                # creating an entry that can only fail at setup.
+                try:
+                    email = await self._async_verify(credentials)
+                except AuthError as err:
+                    _LOGGER.warning("Imported credentials rejected: %s", err)
+                    errors["base"] = "invalid_auth"
+                except WorksWithAlexaError as err:
+                    _LOGGER.warning("Could not verify imported bundle: %s", err)
+                    errors["base"] = "cannot_connect"
+                else:
+                    return await self._async_finalize(credentials, email)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_CREDENTIALS): str,
+                vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
+                    SUPPORTED_DOMAINS
+                ),
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+            }
+        )
+        return self.async_show_form(
+            step_id="import_token", data_schema=schema, errors=errors
+        )
 
     # --- the relay ----------------------------------------------------------
 
@@ -188,16 +297,25 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         finally:
             await proxy.async_stop()
 
-        # Identify the account from the session rather than asking the user, and
-        # use the directed id as the unique id so an email change cannot orphan
-        # the entry.
-        directed_id, email = await self._async_identify(credentials)
-        await self.async_set_unique_id(directed_id)
+        # Identify the account from the session rather than asking the user.
+        email = await self._async_identify(credentials)
+        return await self._async_finalize(credentials, email)
+
+    # --- shared tail --------------------------------------------------------
+
+    async def _async_finalize(
+        self, credentials: dict[str, Any], email: str | None
+    ) -> ConfigFlowResult:
+        """Create the entry from verified credentials, whichever path minted them."""
+        # Prefer the account identity over the device serial as the unique id, so
+        # re-registering the same account is recognised as a duplicate.
+        unique_id = email or credentials["device_serial"]
+        await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
         data = {
             CONF_URL: self._config[CONF_URL],
-            CONF_DIRECTED_ID: directed_id,
+            CONF_DIRECTED_ID: unique_id,
             CONF_DEVICE_SERIAL: credentials["device_serial"],
             CONF_REFRESH_TOKEN: credentials["refresh_token"],
             CONF_MAC_DMS: credentials["mac_dms"],
@@ -206,13 +324,11 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         title = f"Works with Alexa ({email})" if email else "Works with Alexa"
         return self.async_create_entry(title=title, data=data, options=options)
 
-    async def _async_identify(
-        self, credentials: dict[str, Any]
-    ) -> tuple[str, str | None]:
-        """Read the account's directed id and email from a live session.
+    async def _async_verify(self, credentials: dict[str, Any]) -> str | None:
+        """Drive a live session from the credentials and return the account email.
 
-        Failure here is non-fatal: fall back to the device serial as the unique
-        id so a working login is never thrown away over a cosmetic lookup.
+        Raises :class:`AuthError` if the credentials are not accepted, or
+        :class:`WorksWithAlexaError` if Amazon could not be reached.
         """
         from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -225,19 +341,27 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             refresh_token=credentials["refresh_token"],
             mac_dms=credentials["mac_dms"],
         )
+        await session.async_setup()
+        return await session.async_get_account_email()
+
+    async def _async_identify(self, credentials: dict[str, Any]) -> str | None:
+        """Best-effort account email for the login path.
+
+        Failure here is non-fatal: the relay handshake already proved the
+        credentials, so a working login is never thrown away over a cosmetic
+        lookup.
+        """
         try:
-            await session.async_setup()
-            email = await session.async_get_account_email()
+            return await self._async_verify(credentials)
         except WorksWithAlexaError as err:
             _LOGGER.debug("Account identification failed, using serial: %s", err)
-            return credentials["device_serial"], None
-        return email or credentials["device_serial"], email
+            return None
 
     def _retry_user(self, reason: str) -> ConfigFlowResult:
         """Return to the first form with an error rather than aborting."""
         self._config = {}
         return self.async_show_form(
-            step_id="user",
+            step_id="login",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(

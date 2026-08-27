@@ -3,10 +3,27 @@
     "step": {
       "user": {
         "title": "Works with Alexa",
+        "description": "Choose how to connect your Amazon account.",
+        "menu_options": {
+          "login": "Sign in to Amazon",
+          "import_token": "Use an existing credential bundle"
+        }
+      },
+      "login": {
+        "title": "Works with Alexa",
         "description": "Sign in to Amazon to control your Alexa-only devices. After you submit, a window opens for Amazon's own sign-in (including any two-factor step). The Home Assistant URL below must be the one your browser can reach.",
         "data": {
           "url": "Amazon marketplace",
           "hass_url": "Home Assistant URL (as your browser reaches it)",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      },
+      "import_token": {
+        "title": "Use an existing credential bundle",
+        "description": "Paste a credential bundle from an account that is already registered. It must contain the refresh token, macDms and device serial. The marketplace below is only used if the bundle does not name one.",
+        "data": {
+          "credentials": "Credential bundle (JSON)",
+          "url": "Amazon marketplace",
           "scan_interval": "Polling interval (seconds)"
         }
       },
@@ -17,7 +34,9 @@
     },
     "error": {
       "login_failed": "Login did not complete. Make sure you finished Amazon's sign-in, and try from a browser not already signed in to Amazon.",
-      "cannot_connect": "Could not reach Amazon. Check your connection and try again."
+      "cannot_connect": "Could not reach Amazon. Check your connection and try again.",
+      "invalid_bundle": "That is not a usable credential bundle. It must be JSON containing refreshToken, macDms and deviceSerial.",
+      "invalid_auth": "Amazon rejected those credentials. The refresh token may have been revoked."
     },
     "abort": {
       "already_configured": "This Amazon account is already set up.",

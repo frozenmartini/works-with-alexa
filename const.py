@@ -71,6 +71,8 @@ CONF_DEVICE_SERIAL: Final = "device_serial"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_MAC_DMS: Final = "mac_dms"
 
+CONF_CREDENTIALS: Final = "credentials"
+
 CONF_HASS_URL: Final = "hass_url"
 CONF_PUBLIC_URL: Final = "public_url"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
