@@ -49,6 +49,7 @@ query Endpoints {
           __typename
           ... on ModeConfiguration {
             order
+            friendlyName { value { text } }
             modeOptions { value modeResources { friendlyName { value { text } } } }
           }
           ... on RangeConfiguration {
