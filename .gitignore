@@ -1,0 +1,8 @@
+.claude/
+CLAUDE.md
+works_with_alexa.code-workspace
+
+# Sibling reverse-engineering repo (own git history, lives outside this repo
+# at /homeassistant/homeassistant-alexa-controlled-device-library — this
+# entry is inert unless it's ever nested inside this directory).
+homeassistant-alexa-controlled-device-library/
