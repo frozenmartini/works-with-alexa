@@ -224,13 +224,20 @@ class Endpoint:
         -- which is not a member of ``modeOptions`` and sits below the range
         minimum. It is an unknown sentinel, not a reading. Read-only features
         keep reporting real values while off, so they are exempt (ref/07, ref/09).
+
+        The comparison is numeric, not textual: ``mode`` reports the sentinel as
+        the string ``"0"`` but ``range`` reports it as the float ``0.0``, and a
+        string test silently lets the latter through as a real reading.
+        Non-numeric values (``"OFF"`` on power and toggle) are never sentinels.
         """
         value = feature.value
-        if value is None or not feature.writable:
+        if value is None or not feature.writable or self.is_on is not False:
             return value
-        if self.is_on is False and str(value) == "0":
-            return None
-        return value
+        try:
+            is_sentinel = float(value) == 0
+        except (TypeError, ValueError):
+            is_sentinel = False
+        return None if is_sentinel else value
 
 
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
