@@ -71,16 +71,24 @@ query Endpoints {
 # the reason none of them can drive a fan speed or a cover (ref/06, ref/07).
 # `errors` is a sibling of the responses: HTTP 200 does not mean the command
 # worked, and a batch can partially succeed (ref/00 §5).
+#
+# The requests are passed as a typed variable list and wrapped inline, which is
+# the shape ref/07 confirmed by execution. Declaring a single
+# `SetEndpointFeaturesInput` variable instead does not match what the caller
+# sends, and the mismatch is invisible until the document itself validates.
+#
+# `responsePayload` is deliberately not selected: it is an object type, so
+# requesting it bare fails validation outright, and nothing here consumes it --
+# `check_control_result` reads only `endpointId` and `code`.
 SET_ENDPOINT_FEATURES_MUTATION = """
-mutation SetEndpointFeatures($input: SetEndpointFeaturesInput!) {
-  setEndpointFeatures(setEndpointFeaturesInput: $input) {
+mutation SetEndpointFeatures($r: [FeatureControlRequest!]!) {
+  setEndpointFeatures(setEndpointFeaturesInput: {featureControlRequests: $r}) {
     featureControlResponses {
       endpointId
       featureName
       instance
       featureOperationName
       code
-      responsePayload
     }
     errors { endpointId code }
   }
