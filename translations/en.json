@@ -5,9 +5,9 @@
         "title": "Works with Alexa",
         "description": "Choose how to connect your Amazon account.",
         "menu_options": {
-          "login": "Sign in to Amazon",
-          "import_alexa_media": "Borrow the sign-in from Alexa Media Player",
-          "import_token": "Use an existing credential bundle"
+          "import_alexa_media": "Borrow the sign-in from Alexa Media Player (recommended)",
+          "import_token": "Use an existing credential bundle",
+          "login": "Sign in to Amazon (not working yet)"
         }
       },
       "import_alexa_media": {
@@ -19,8 +19,8 @@
         }
       },
       "login": {
-        "title": "Works with Alexa",
-        "description": "Sign in to Amazon to control your Alexa-only devices. After you submit, a window opens for Amazon's own sign-in (including any two-factor step). The Home Assistant URL below must be the one your browser can reach.",
+        "title": "Sign in to Amazon (not working yet)",
+        "description": "This path is unfinished and is not expected to succeed. Amazon answers a new device registration with a challenge whose page will not load through the sign-in relay, so it stops partway. Use one of the other options instead. If you want to try it anyway: after you submit, a window opens for Amazon's own sign-in, and the Home Assistant URL below must be the one your browser can reach.",
         "data": {
           "url": "Amazon marketplace",
           "hass_url": "Home Assistant URL (as your browser reaches it)",

@@ -171,11 +171,18 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Offer a fresh Amazon sign-in or adoption of existing credentials."""
-        options = ["login", "import_token"]
+        """Offer adoption of existing credentials, or a fresh Amazon sign-in.
+
+        The working paths come first. ``login`` is listed last and labelled as
+        unfinished: Amazon serves a proof-of-work CVF challenge whose widget
+        loads from a CDN host the relay cannot proxy, so a fresh registration
+        cannot currently complete (threads/002 Q9, Q12).
+        """
+        options = ["import_token", "login"]
         if self._alexa_media_accounts():
-            # Only worth offering when there is actually something to borrow.
-            options.insert(1, "import_alexa_media")
+            # Only worth offering when there is actually something to borrow --
+            # and it is the path that works, so it leads.
+            options.insert(0, "import_alexa_media")
         return self.async_show_menu(step_id="user", menu_options=options)
 
     def _default_hass_url(self) -> str:
