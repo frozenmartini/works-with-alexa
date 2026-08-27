@@ -103,6 +103,13 @@ CONTROLLABLE_CATEGORIES: Final = frozenset({"FAN"})
 # only the label says which one is speed (ref/07).
 FAN_SPEED_LABELS: Final = ("fan speed", "speed")
 
+# The Window Fan exposes no oscillate capability of its own. By user directive
+# its Direction mode is presented as Home Assistant's oscillate control:
+# Exhaust oscillates, Direct does not. Matched on the option labels rather than
+# the instance number, for the same reason as the speed lookup.
+OSCILLATE_ON_LABEL: Final = "exhaust"
+OSCILLATE_OFF_LABEL: Final = "direct"
+
 # Token refresh happens this many seconds before the access token actually expires.
 TOKEN_EXPIRY_MARGIN: Final = 300
 

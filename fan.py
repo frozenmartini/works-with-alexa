@@ -21,7 +21,12 @@ from homeassistant.util.percentage import (
 )
 
 from . import WorksWithAlexaConfigEntry
-from .const import CONTROLLABLE_CATEGORIES, FAN_SPEED_LABELS
+from .const import (
+    CONTROLLABLE_CATEGORIES,
+    FAN_SPEED_LABELS,
+    OSCILLATE_OFF_LABEL,
+    OSCILLATE_ON_LABEL,
+)
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import WorksWithAlexaEntity
 from .models import Endpoint, Feature
@@ -42,6 +47,26 @@ def speed_feature(endpoint: Endpoint) -> Feature | None:
         label = (feature.friendly_name or "").strip().lower()
         if feature.ordered and feature.writable and label in FAN_SPEED_LABELS:
             return feature
+    return None
+
+
+def oscillation_feature(endpoint: Endpoint) -> tuple[Feature, str, str] | None:
+    """The mode feature standing in for oscillation, with its on/off values.
+
+    Returns the feature plus the option values meaning oscillating and not
+    oscillating, or None when the endpoint has no such pair.
+    """
+    for feature in endpoint.features_named(FEATURE_MODE):
+        if not feature.writable:
+            continue
+        values = {
+            option.friendly_name.strip().lower(): option.value
+            for option in feature.mode_options
+        }
+        on_value = values.get(OSCILLATE_ON_LABEL)
+        off_value = values.get(OSCILLATE_OFF_LABEL)
+        if on_value is not None and off_value is not None:
+            return feature, on_value, off_value
     return None
 
 
@@ -82,9 +107,17 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
             [option.value for option in speed.mode_options] if speed else []
         )
 
+        oscillation = oscillation_feature(endpoint)
+        self._oscillate_key = oscillation[0].key if oscillation else None
+        self._oscillate_instance = oscillation[0].instance if oscillation else None
+        self._oscillate_on = oscillation[1] if oscillation else None
+        self._oscillate_off = oscillation[2] if oscillation else None
+
         features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
         if self._speed_values:
             features |= FanEntityFeature.SET_SPEED
+        if oscillation:
+            features |= FanEntityFeature.OSCILLATE
         self._attr_supported_features = features
 
     @property
@@ -140,6 +173,37 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
             {"mode": value},
             feature_name=FEATURE_MODE,
             instance=self._speed_instance,
+        )
+
+    @property
+    def oscillating(self) -> bool | None:
+        """Whether Direction is set to the oscillating option.
+
+        None while the device reports the off sentinel, which is neither
+        option, rather than guessing at False.
+        """
+        endpoint = self.endpoint
+        if endpoint is None or self._oscillate_key is None:
+            return None
+        feature = endpoint.features.get(self._oscillate_key)
+        if feature is None:
+            return None
+        value = endpoint.live_value(feature)
+        if value is None:
+            return None
+        value = str(value)
+        if value not in (self._oscillate_on, self._oscillate_off):
+            return None
+        return value == self._oscillate_on
+
+    async def async_oscillate(self, oscillating: bool) -> None:
+        if self._oscillate_key is None:
+            return
+        await self.async_control(
+            "setMode",
+            {"mode": self._oscillate_on if oscillating else self._oscillate_off},
+            feature_name=FEATURE_MODE,
+            instance=self._oscillate_instance,
         )
 
     async def async_turn_on(
