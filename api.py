@@ -23,6 +23,8 @@ from yarl import URL
 from .const import (
     APP_NAME,
     APP_VERSION,
+    COOKIE_EXCHANGE_PATH,
+    CSRF_PATHS,
     DEVICE_TYPE,
     GRAPHQL_PATH,
     USER_AGENT,
@@ -34,6 +36,7 @@ from .protocol import (
     check_control_result,
     check_graphql_response,
     cookie_pairs,
+    exchanged_cookies,
     extract_tokens,
     parse_json,
     raise_for_throttle,
@@ -96,7 +99,7 @@ class AmazonAlexaSession:
         """Rebuild a usable session from the refresh token alone."""
         async with self._lock:
             await self._async_refresh()
-        await self._async_fetch_csrf()
+        await self._async_rebuild_web_session()
 
     async def async_get_account_email(self) -> str | None:
         """Read the authenticated account's email.
@@ -201,24 +204,75 @@ class AmazonAlexaSession:
                 pairs, response_url=URL(f"https://{self._domain}")
             )
 
-    async def _async_fetch_csrf(self) -> None:
-        """Obtain the CSRF token, which is itself a cookie.
+    async def _async_rebuild_web_session(self) -> None:
+        """Turn the bearer token into a usable web session.
 
-        Any authenticated request sets it; the response body is irrelevant.
+        The bearer alone is rejected by the web API; it needs browser cookies
+        (a separate exchange) and the CSRF token those cookies carry. Both are
+        redone on every refresh, never persisted (ref/04 §1.1.5-1.1.6).
+        """
+        await self._async_exchange_cookies()
+        await self._async_fetch_csrf()
+
+    async def _async_exchange_cookies(self) -> None:
+        """Swap the refresh token for web session cookies.
+
+        This is a distinct call from the bearer refresh, on ``www.<domain>`` and
+        form-encoded, not the GraphQL host. An empty result is a hard failure:
+        it means no web session was produced (ref/04 §1.1.5).
         """
         try:
-            await self._async_request(
-                "GET",
-                f"https://alexa.{self._domain}/api/language",
-                allow_missing_json=True,
-            )
-        except ApiConnectionError:
-            _LOGGER.debug("CSRF priming request failed; checking the jar anyway")
+            async with self._session.post(
+                f"https://www.{self._domain}{COOKIE_EXCHANGE_PATH}",
+                data={
+                    "source_token_type": "refresh_token",
+                    "source_token": self._refresh_token,
+                    "requested_token_type": "auth_cookies",
+                    "domain": f".{self._domain}",
+                },
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json",
+                    "x-amzn-identity-auth-domain": f"api.{self._domain}",
+                },
+            ) as response:
+                body = await response.text()
+                status = response.status
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise ApiConnectionError(f"Cookie exchange failed: {err}") from err
 
-        for cookie in self._session.cookie_jar:
-            if cookie.key == "csrf":
-                self._csrf = cookie.value
-                return
+        if status in (401, 403):
+            raise AuthError(f"Cookie exchange rejected the token (HTTP {status})")
+        raise_for_throttle(body)
+        if status >= 400:
+            raise ApiConnectionError(f"Cookie exchange returned HTTP {status}")
+
+        pairs = exchanged_cookies(parse_json(body), self._domain)
+        if not pairs:
+            raise AuthError("Cookie exchange produced no web session cookies")
+        self._session.cookie_jar.update_cookies(
+            pairs, response_url=URL(f"https://{self._domain}")
+        )
+
+    async def _async_fetch_csrf(self) -> None:
+        """Read the CSRF token, which is itself a cookie.
+
+        There is no CSRF endpoint; the first page that sets a ``csrf`` cookie
+        wins, tried in a fixed order (ref/04 §1.1.6).
+        """
+        for path in CSRF_PATHS:
+            try:
+                await self._async_request(
+                    "GET",
+                    f"https://alexa.{self._domain}{path}",
+                    allow_missing_json=True,
+                )
+            except ApiConnectionError:
+                _LOGGER.debug("CSRF path %s failed; trying the next", path)
+            for cookie in self._session.cookie_jar:
+                if cookie.key == "csrf":
+                    self._csrf = cookie.value
+                    return
         raise AuthError("No csrf cookie was issued; the session is not usable")
 
     # --- transport ----------------------------------------------------------
@@ -266,7 +320,7 @@ class AmazonAlexaSession:
             async with self._lock:
                 self._access_token = None
                 await self._async_refresh()
-            await self._async_fetch_csrf()
+            await self._async_rebuild_web_session()
             return await self._async_request(
                 method,
                 url,

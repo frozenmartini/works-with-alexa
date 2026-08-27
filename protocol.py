@@ -121,6 +121,29 @@ def cookie_pairs(cookies: Any) -> list[tuple[str, str]]:
     return pairs
 
 
+def exchanged_cookies(data: Any, domain: str) -> list[tuple[str, str]]:
+    """Pull the session cookies out of an ``/ap/exchangetoken/cookies`` reply.
+
+    They arrive keyed by the dotted domain, e.g. ``.amazon.com``. The absence of
+    that key is a hard error upstream (ref/04 §1.1.5): it means the exchange did
+    not actually produce a web session, so callers should treat an empty result
+    as a failure rather than proceeding cookieless.
+    """
+    if not isinstance(data, dict):
+        return []
+    response = data.get("response")
+    tokens = response.get("tokens") if isinstance(response, dict) else None
+    bucket = tokens.get("cookies") if isinstance(tokens, dict) else None
+    if not isinstance(bucket, dict):
+        return []
+    # Prefer the exact dotted-domain key; fall back to whatever single bucket
+    # exists, since Amazon occasionally returns the effective marketplace domain.
+    entries = bucket.get(f".{domain}")
+    if entries is None and len(bucket) == 1:
+        entries = next(iter(bucket.values()))
+    return cookie_pairs(entries)
+
+
 def check_graphql_response(result: Any) -> dict[str, Any]:
     """Unwrap a GraphQL reply, raising on the errors hidden inside a 200."""
     if not isinstance(result, dict):

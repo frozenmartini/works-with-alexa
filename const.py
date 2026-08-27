@@ -43,6 +43,20 @@ SUPPORTED_DOMAINS: Final = [
 
 GRAPHQL_PATH: Final = "/nexus/v1/graphql"
 
+# The bearer token alone does not satisfy the web API; it wants browser cookies,
+# fetched by a separate exchange (ref/04 §1.1.5). Path is on www.<domain>, and
+# the response is keyed by the dotted domain, e.g. ".amazon.com".
+COOKIE_EXCHANGE_PATH: Final = "/ap/exchangetoken/cookies"
+
+# There is no CSRF endpoint. The first of these that sets a `csrf` cookie wins,
+# tried in order against alexa.<domain> (ref/04 §1.1.6).
+CSRF_PATHS: Final = (
+    "/api/language",
+    "/spa/index.html",
+    "/api/devices-v2/device?cached=false",
+    "/templates/oobe/d-device-pick.handlebars",
+)
+
 AUTH_CALLBACK_PATH: Final = "/auth/works_with_alexa/callback"
 AUTH_CALLBACK_NAME: Final = "auth:works_with_alexa:callback"
 AUTH_PROXY_PATH: Final = "/auth/works_with_alexa/proxy"
