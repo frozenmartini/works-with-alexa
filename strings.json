@@ -6,7 +6,16 @@
         "description": "Choose how to connect your Amazon account.",
         "menu_options": {
           "login": "Sign in to Amazon",
+          "import_alexa_media": "Borrow the sign-in from Alexa Media Player",
           "import_token": "Use an existing credential bundle"
+        }
+      },
+      "import_alexa_media": {
+        "title": "Borrow from Alexa Media Player",
+        "description": "Reuse the Amazon sign-in that Alexa Media Player already holds, with no second sign-in and no new device registration. That integration keeps working; sharing the token does not disturb its session.",
+        "data": {
+          "account": "Alexa Media Player account",
+          "scan_interval": "Polling interval (seconds)"
         }
       },
       "login": {
@@ -48,6 +57,7 @@
     "abort": {
       "already_configured": "This Amazon account is already set up.",
       "proxy_missing": "The login session was lost. Start again.",
+      "no_alexa_media": "No Alexa Media Player account with a stored sign-in was found.",
       "reauth_successful": "Re-authentication was successful."
     }
   },

@@ -31,17 +31,20 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
-from homeassistant.helpers import config_validation as cv
 from homeassistant.exceptions import Unauthorized
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.storage import Store
 
 from .auth_proxy import LoginRelay
 from .const import (
+    ALEXA_MEDIA_DOMAIN,
+    ALEXA_MEDIA_OAUTH,
     AUTH_CALLBACK_NAME,
     AUTH_CALLBACK_PATH,
     AUTH_PROXY_NAME,
     AUTH_PROXY_PATH,
+    CONF_ACCOUNT,
     CONF_CREDENTIALS,
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
@@ -58,6 +61,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     SUPPORTED_DOMAINS,
 )
+from .fingerprint import alexa_media_device_serial
 from .models import produces_entities
 from .protocol import AuthError, WorksWithAlexaError
 
@@ -167,9 +171,11 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Offer a fresh Amazon sign-in or adoption of existing credentials."""
-        return self.async_show_menu(
-            step_id="user", menu_options=["login", "import_token"]
-        )
+        options = ["login", "import_token"]
+        if self._alexa_media_accounts():
+            # Only worth offering when there is actually something to borrow.
+            options.insert(1, "import_alexa_media")
+        return self.async_show_menu(step_id="user", menu_options=options)
 
     async def async_step_login(
         self, user_input: dict[str, Any] | None = None
@@ -252,6 +258,105 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(
             step_id="import_token", data_schema=schema, errors=errors
+        )
+
+    # --- borrowing from alexa_media_player ----------------------------------
+
+    def _alexa_media_accounts(self) -> list[tuple[int, Any]]:
+        """(index, entry) for each alexa_media account holding a refresh token.
+
+        The index is the entry's position among all alexa_media entries, which
+        is part of how that integration derives its device serial.
+        """
+        accounts = []
+        for index, entry in enumerate(
+            self.hass.config_entries.async_entries(ALEXA_MEDIA_DOMAIN)
+        ):
+            oauth = entry.data.get(ALEXA_MEDIA_OAUTH) or {}
+            if oauth.get("refresh_token") and oauth.get("mac_dms"):
+                accounts.append((index, entry))
+        return accounts
+
+    async def _async_alexa_media_serial(
+        self, email: str, url: str, index: int
+    ) -> str:
+        """Reproduce the device serial alexa_media registered with.
+
+        That integration does not store the serial; it recomputes it from Home
+        Assistant's instance id, the account's position among its entries, and a
+        hash of email+url. The refresh token is bound to the device that
+        registered it, so the same serial has to be rebuilt the same way or
+        Amazon refuses the exchange.
+        """
+        from homeassistant.helpers.instance_id import async_get as async_get_instance_id
+
+        instance_id = await async_get_instance_id(self.hass)
+        return alexa_media_device_serial(instance_id, email, url, index)
+
+    async def async_step_import_alexa_media(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reuse a token the alexa_media_player integration already holds.
+
+        Both integrations register as the same iOS app device type, so a token
+        minted by one is accepted for the other (ref/10). Refreshing does not
+        rotate the token, so borrowing it does not disturb the other
+        integration's session.
+        """
+        accounts = self._alexa_media_accounts()
+        if not accounts:
+            return self.async_abort(reason="no_alexa_media")
+
+        errors: dict[str, str] = {}
+        by_entry = {entry.entry_id: (index, entry) for index, entry in accounts}
+
+        if user_input is not None:
+            chosen = by_entry.get(user_input[CONF_ACCOUNT])
+            if chosen is None:
+                # Removed between rendering the form and submitting it.
+                return self.async_abort(reason="no_alexa_media")
+            index, entry = chosen
+            oauth = entry.data[ALEXA_MEDIA_OAUTH]
+            email = entry.data.get("email", "")
+            url = entry.data.get("url", DEFAULT_DOMAIN)
+
+            self._config[CONF_URL] = url
+            self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+            credentials = {
+                "refresh_token": oauth["refresh_token"],
+                "mac_dms": oauth["mac_dms"],
+                "device_serial": await self._async_alexa_media_serial(
+                    email, url, index
+                ),
+            }
+            try:
+                verified_email = await self._async_verify(credentials)
+            except AuthError as err:
+                _LOGGER.warning("Borrowed credentials rejected: %s", err)
+                errors["base"] = "invalid_auth"
+            except WorksWithAlexaError as err:
+                _LOGGER.warning("Could not verify borrowed credentials: %s", err)
+                errors["base"] = "cannot_connect"
+            else:
+                return await self._async_finalize(
+                    credentials, verified_email or email or None
+                )
+
+        labels = {
+            entry.entry_id: entry.title or entry.data.get("email", entry.entry_id)
+            for _, entry in accounts
+        }
+        default_account = next(iter(labels))
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ACCOUNT, default=default_account): vol.In(labels),
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+            }
+        )
+        return self.async_show_form(
+            step_id="import_alexa_media", data_schema=schema, errors=errors
         )
 
     # --- the relay ----------------------------------------------------------

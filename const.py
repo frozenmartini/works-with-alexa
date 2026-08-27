@@ -72,6 +72,14 @@ CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_MAC_DMS: Final = "mac_dms"
 
 CONF_CREDENTIALS: Final = "credentials"
+CONF_ACCOUNT: Final = "account"
+
+# The alexa_media_player integration registers against the same iOS app device
+# type as we do, so a refresh token it already holds works here (ref/10). Its
+# entry keeps the token under `oauth`, and derives the device serial from Home
+# Assistant's instance id -- see the borrow step in config_flow.
+ALEXA_MEDIA_DOMAIN: Final = "alexa_media"
+ALEXA_MEDIA_OAUTH: Final = "oauth"
 
 CONF_HASS_URL: Final = "hass_url"
 CONF_PUBLIC_URL: Final = "public_url"
