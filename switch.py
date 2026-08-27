@@ -64,7 +64,7 @@ class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
         return str(value).upper() == "ON"
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.async_control("turnOn")
+        await self.async_control("turnOn", assume="ON")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.async_control("turnOff")
+        await self.async_control("turnOff", assume="OFF")

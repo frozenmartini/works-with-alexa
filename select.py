@@ -79,4 +79,4 @@ class WorksWithAlexaSelect(WorksWithAlexaEntity, SelectEntity):
         value = self._value_of.get(option)
         if value is None:
             return
-        await self.async_control("setMode", {"mode": value})
+        await self.async_control("setMode", {"mode": value}, assume=value)

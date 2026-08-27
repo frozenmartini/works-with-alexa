@@ -121,16 +121,11 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
         self._attr_supported_features = features
 
     @property
-    def _speed(self) -> Feature | None:
-        endpoint = self.endpoint
-        if endpoint is None or self._speed_key is None:
-            return None
-        return endpoint.features.get(self._speed_key)
-
-    @property
     def is_on(self) -> bool | None:
-        endpoint = self.endpoint
-        return endpoint.is_on if endpoint else None
+        value = self.feature_value(self._feature_key)
+        if value is None:
+            return None
+        return str(value).upper() == "ON"
 
     @property
     def speed_count(self) -> int:
@@ -144,10 +139,9 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
         modeOptions. It is a sentinel, not a speed, and mapping it would raise
         (ref/07).
         """
-        endpoint, speed = self.endpoint, self._speed
-        if endpoint is None or speed is None or not self._speed_values:
+        if self._speed_key is None or not self._speed_values:
             return None
-        value = endpoint.live_value(speed)
+        value = self.feature_value(self._speed_key)
         if value is None:
             return None
         value = str(value)
@@ -173,6 +167,7 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
             {"mode": value},
             feature_name=FEATURE_MODE,
             instance=self._speed_instance,
+            assume=value,
         )
 
     @property
@@ -182,13 +177,9 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
         None while the device reports the off sentinel, which is neither
         option, rather than guessing at False.
         """
-        endpoint = self.endpoint
-        if endpoint is None or self._oscillate_key is None:
+        if self._oscillate_key is None:
             return None
-        feature = endpoint.features.get(self._oscillate_key)
-        if feature is None:
-            return None
-        value = endpoint.live_value(feature)
+        value = self.feature_value(self._oscillate_key)
         if value is None:
             return None
         value = str(value)
@@ -199,11 +190,13 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
     async def async_oscillate(self, oscillating: bool) -> None:
         if self._oscillate_key is None:
             return
+        value = self._oscillate_on if oscillating else self._oscillate_off
         await self.async_control(
             "setMode",
-            {"mode": self._oscillate_on if oscillating else self._oscillate_off},
+            {"mode": value},
             feature_name=FEATURE_MODE,
             instance=self._oscillate_instance,
+            assume=value,
         )
 
     async def async_turn_on(
@@ -212,9 +205,9 @@ class WorksWithAlexaFan(WorksWithAlexaEntity, FanEntity):
         preset_mode: str | None = None,
         **kwargs: Any,
     ) -> None:
-        await self.async_control("turnOn")
+        await self.async_control("turnOn", assume="ON")
         if percentage:
             await self.async_set_percentage(percentage)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.async_control("turnOff")
+        await self.async_control("turnOff", assume="OFF")

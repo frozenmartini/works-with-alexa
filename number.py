@@ -80,4 +80,6 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
         # The API echoes back what it accepted; send an int where the step is
         # whole, since that is the shape confirmed against the device.
         payload = int(value) if float(value).is_integer() else value
-        await self.async_control("setRangeValue", {"rangeValue": payload})
+        await self.async_control(
+            "setRangeValue", {"rangeValue": payload}, assume=payload
+        )
