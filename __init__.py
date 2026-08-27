@@ -13,16 +13,19 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AmazonAlexaSession
 from .const import (
     CONF_DEVICE_SERIAL,
+    CONF_INCLUDE_ENDPOINTS,
     CONF_MAC_DMS,
     CONF_REFRESH_TOKEN,
     CONF_URL,
+    DOMAIN,
 )
 from .coordinator import WorksWithAlexaCoordinator
 from .protocol import AuthError, WorksWithAlexaError
@@ -74,11 +77,67 @@ async def async_setup_entry(
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+    _purge_deselected(hass, entry, coordinator)
     # The device selection and the polling interval are both read at setup, so
     # changing either from the options flow needs the entry to come back up.
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+@callback
+def _purge_deselected(
+    hass: HomeAssistant,
+    entry: WorksWithAlexaConfigEntry,
+    coordinator: WorksWithAlexaCoordinator,
+) -> None:
+    """Drop registry devices the user has deselected.
+
+    Home Assistant keeps a device in the registry once created, so simply not
+    rebuilding its entities leaves it behind as an empty shell that can only be
+    disabled. Deselecting is meant to remove, so remove it here.
+
+    Devices are only dropped when the selection is an explicit list. With no
+    selection recorded every endpoint is included, and an endpoint missing from
+    a poll is a transient gap, not a decision to forget the device.
+    """
+    if entry.options.get(CONF_INCLUDE_ENDPOINTS) is None:
+        return
+
+    registry = dr.async_get(hass)
+    keep = set(coordinator.selected)
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        ours = {
+            identifier
+            for domain, identifier in device.identifiers
+            if domain == DOMAIN
+        }
+        if ours and not ours & keep:
+            _LOGGER.debug("Removing deselected device %s", device.name)
+            # Detach rather than delete outright, so a device also provided by
+            # another integration survives.
+            registry.async_update_device(
+                device.id, remove_config_entry_id=entry.entry_id
+            )
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    entry: WorksWithAlexaConfigEntry,
+    device: dr.DeviceEntry,
+) -> bool:
+    """Allow deleting a device from the UI once it is no longer selected.
+
+    Without this hook Home Assistant offers only "disable". A device that is
+    still selected must not be deletable, or it would reappear on the next poll.
+    """
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is None:
+        return True
+    ours = {
+        identifier for domain, identifier in device.identifiers if domain == DOMAIN
+    }
+    return not (ours & set(coordinator.selected))
 
 
 async def _async_options_updated(

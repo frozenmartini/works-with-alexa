@@ -58,6 +58,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     SUPPORTED_DOMAINS,
 )
+from .models import produces_entities
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +74,11 @@ def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
     labelled: list[tuple[str, str, str]] = []
     seen: dict[str, int] = {}
     for endpoint in endpoints.values():
+        # Most of an Alexa account is not devices -- Echo speakers, phone apps,
+        # scene triggers. Offering an endpoint that yields nothing would be an
+        # invitation to tick it and get an empty device.
+        if not produces_entities(endpoint):
+            continue
         # Sort on the stripped name: some names on a real account carry leading
         # whitespace, which would otherwise sort them ahead of everything.
         name = endpoint.friendly_name.strip()
@@ -529,11 +535,18 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         choices = self._endpoint_choices()
         if choices:
             selected = current.get(CONF_INCLUDE_ENDPOINTS)
+            if selected is None:
+                default = list(choices)
+            else:
+                # A stored selection can name endpoints the picker no longer
+                # offers -- one saved before the list was narrowed to real
+                # devices, or a device since removed from the account. Defaults
+                # outside the offered set are not selectable, so drop them.
+                default = [
+                    endpoint_id for endpoint_id in choices if endpoint_id in selected
+                ]
             schema[
-                vol.Required(
-                    CONF_INCLUDE_ENDPOINTS,
-                    default=list(choices) if selected is None else selected,
-                )
+                vol.Required(CONF_INCLUDE_ENDPOINTS, default=default)
             ] = cv.multi_select(choices)
 
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))

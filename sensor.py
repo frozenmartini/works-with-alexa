@@ -27,7 +27,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import WorksWithAlexaConfigEntry
 from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
-from .models import Endpoint, Feature
+from .models import Endpoint, Feature, sensor_features
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,14 +50,9 @@ async def async_setup_entry(
 
     entities: list[WorksWithAlexaSensor] = []
     for endpoint in coordinator.selected.values():
-        for feature in endpoint.features.values():
-            if feature.writable and not endpoint.blocked:
-                continue
-            # Features such as connectivity and endpointHealth carry no value on
-            # this account. Creating entities for them would only ever produce
-            # permanently-unknown state, so they are skipped at discovery.
-            if endpoint.live_value(feature) is None:
-                continue
+        # Shared with the device picker, so what the picker offers and what this
+        # actually builds cannot drift apart.
+        for feature in sensor_features(endpoint):
             entities.append(WorksWithAlexaSensor(coordinator, endpoint, feature))
 
     _LOGGER.debug("Adding %d sensors", len(entities))

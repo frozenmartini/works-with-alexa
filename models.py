@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .const import BLOCKED_MANUFACTURERS
+from .const import BLOCKED_MANUFACTURERS, CONTROLLABLE_CATEGORIES
 
 # Feature names we know how to interpret.
 FEATURE_POWER = "power"
@@ -238,6 +238,43 @@ class Endpoint:
         except (TypeError, ValueError):
             is_sentinel = False
         return None if is_sentinel else value
+
+
+def sensor_features(endpoint: Endpoint) -> list[Feature]:
+    """Features that become read-only entities.
+
+    A feature qualifies when it currently reports a value and is either
+    read-only or sits on a blocked endpoint -- a blocked endpoint's writable
+    features may only ever be read. Features carrying no value, such as
+    ``connectivity`` and ``endpointHealth``, would only ever be unknown.
+    """
+    return [
+        feature
+        for feature in endpoint.features.values()
+        if (not feature.writable or endpoint.blocked)
+        and endpoint.live_value(feature) is not None
+    ]
+
+
+def is_controllable(endpoint: Endpoint) -> bool:
+    """Whether this endpoint may produce writable entities."""
+    return (
+        not endpoint.blocked
+        and endpoint.display_category in CONTROLLABLE_CATEGORIES
+        and any(feature.writable for feature in endpoint.features.values())
+    )
+
+
+def produces_entities(endpoint: Endpoint) -> bool:
+    """Whether this endpoint would yield anything at all in Home Assistant.
+
+    An Alexa account is mostly not devices: Echo speakers, phone apps, scene
+    triggers and skill shims all arrive as endpoints alongside the real
+    hardware. On the reference account 63 of 73 endpoints produce nothing.
+    Offering those in the device picker invites the user to tick something that
+    then yields no entity, so the picker asks this first.
+    """
+    return bool(sensor_features(endpoint)) or is_controllable(endpoint)
 
 
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
