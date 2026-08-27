@@ -29,8 +29,8 @@ query Endpoints {
       friendlyName
       displayCategories { primary { value } }
       enablement
-      model
-      manufacturer
+      model { value { text } }
+      manufacturer { value { text } }
       features {
         name
         instance
@@ -39,26 +39,25 @@ query Endpoints {
           __typename
           ... on Power { powerStateValue }
           ... on ToggleState { toggleStateValue }
-          ... on Mode { modeValue }
+          ... on Mode { modeValue { value } }
           ... on RangeValue { rangeValue { value } }
           ... on TemperatureSensor { value { value scale } }
           ... on Setpoint { value { value scale } }
           ... on ThermostatMode { thermostatModeValue }
-          ... on Connectivity { connectivityValue }
         }
         configuration {
           __typename
           ... on ModeConfiguration {
             order
-            modeOptions { value modeResources { friendlyName } }
+            modeOptions { value modeResources { friendlyName { value { text } } } }
           }
           ... on RangeConfiguration {
-            friendlyName
-            unitOfMeasure
+            friendlyName { value { text } }
+            unitOfMeasure { value { text } }
             supportedRange { minimumValue maximumValue precision }
             presets { rangeValue }
           }
-          ... on ToggleConfiguration { friendlyName }
+          ... on ToggleConfiguration { friendlyName { value { text } } }
           ... on ThermostatConfiguration { supportedModes }
         }
       }

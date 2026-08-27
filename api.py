@@ -51,6 +51,19 @@ _LOGGER = logging.getLogger(__name__)
 
 _REFRESH_BACKOFF = (1, 4, 16)
 
+# The iOS-app device shape Amazon expects on the token endpoints. Both /auth/token
+# and /ap/exchangetoken/cookies validate the full set -- sending only the subset
+# that happens to pass today is what left the cookie exchange one 400 away from
+# breaking (ref/04 §1.1.5/§1.1.7, corrected against alexa-cookie2 source).
+_DEVICE_SHAPE = {
+    "app_name": APP_NAME,
+    "app_version": APP_VERSION,
+    "di.sdk.version": "6.12.4",
+    "di.hw.version": "iPhone",
+    "di.os.name": "iOS",
+    "di.os.version": "17.5.1",
+}
+
 
 class AmazonAlexaSession:
     """One authenticated session against the Alexa account API."""
@@ -137,17 +150,14 @@ class AmazonAlexaSession:
         rarely the thing at fault (ref/05).
         """
         payload = {
-            "app_name": APP_NAME,
-            "app_version": APP_VERSION,
-            "di.sdk.version": "6.12.4",
+            **_DEVICE_SHAPE,
             "source_token": self._refresh_token,
             "package_name": "com.amazon.echo",
-            "di.hw.version": "iPhone",
             "platform": "iOS",
-            "requested_token_type": ["bearer", "mac_dms", "website_cookies"],
+            # Steady-state refresh wants the plain string; the list form is the
+            # /auth/register shape and Amazon 400s it here (ref/04 §1.1.7).
+            "requested_token_type": "access_token",
             "source_token_type": "refresh_token",
-            "di.os.name": "iOS",
-            "di.os.version": "17.5.1",
             "current_version": APP_VERSION,
             "device_type": DEVICE_TYPE,
             "device_serial": self._device_serial,
@@ -225,6 +235,10 @@ class AmazonAlexaSession:
             async with self._session.post(
                 f"https://www.{self._domain}{COOKIE_EXCHANGE_PATH}",
                 data={
+                    # Amazon 400s ("MissingValue") without the full device shape;
+                    # ref/04 §1.1.5 documented only four fields, alexa-cookie2 sends
+                    # all of these. app_name need not match the registration name.
+                    **_DEVICE_SHAPE,
                     "source_token_type": "refresh_token",
                     "source_token": self._refresh_token,
                     "requested_token_type": "auth_cookies",
