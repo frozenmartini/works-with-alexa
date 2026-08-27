@@ -49,7 +49,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
 
     entities: list[WorksWithAlexaSensor] = []
-    for endpoint in coordinator.data.values():
+    for endpoint in coordinator.selected.values():
         for feature in endpoint.features.values():
             if feature.writable and not endpoint.blocked:
                 continue

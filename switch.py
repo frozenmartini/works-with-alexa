@@ -33,7 +33,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
 
     entities: list[WorksWithAlexaSwitch] = []
-    for endpoint in coordinator.data.values():
+    for endpoint in coordinator.selected.values():
         if endpoint.blocked or endpoint.display_category not in CONTROLLABLE_CATEGORIES:
             continue
         for feature in endpoint.features_named(FEATURE_TOGGLE):

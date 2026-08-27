@@ -27,6 +27,13 @@
           "scan_interval": "Polling interval (seconds)"
         }
       },
+      "select_devices": {
+        "title": "Choose devices",
+        "description": "Your Amazon account has {count} devices. Tick the ones you want in Home Assistant. You can change this later without signing in again.",
+        "data": {
+          "include_endpoints": "Devices"
+        }
+      },
       "reauth_confirm": {
         "title": "Re-authenticate with Amazon",
         "description": "Your stored credentials are no longer accepted. Submit to sign in again; your existing configuration is kept."
@@ -48,8 +55,10 @@
     "step": {
       "init": {
         "title": "Works with Alexa options",
+        "description": "Unticking a device removes its entities. Changes reload the integration.",
         "data": {
-          "scan_interval": "Polling interval (seconds)"
+          "scan_interval": "Polling interval (seconds)",
+          "include_endpoints": "Devices"
         }
       }
     }

@@ -78,7 +78,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     entities = [
         WorksWithAlexaFan(coordinator, endpoint)
-        for endpoint in coordinator.data.values()
+        for endpoint in coordinator.selected.values()
         if not endpoint.blocked
         and endpoint.display_category in CONTROLLABLE_CATEGORIES
         and (power := endpoint.feature(FEATURE_POWER)) is not None

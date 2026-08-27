@@ -31,6 +31,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
+from homeassistant.helpers import config_validation as cv
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.storage import Store
@@ -45,6 +46,7 @@ from .const import (
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
     CONF_HASS_URL,
+    CONF_INCLUDE_ENDPOINTS,
     CONF_MAC_DMS,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
@@ -59,6 +61,34 @@ from .const import (
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
+    """Endpoint id -> label, for the device picker.
+
+    Sorted by the name the user sees, since the ids are opaque. A blocked
+    endpoint is marked rather than hidden: it is still worth importing for its
+    readings, and the label is the only place to say it will never be written to.
+    """
+    labelled: list[tuple[str, str, str]] = []
+    seen: dict[str, int] = {}
+    for endpoint in endpoints.values():
+        # Sort on the stripped name: some names on a real account carry leading
+        # whitespace, which would otherwise sort them ahead of everything.
+        name = endpoint.friendly_name.strip()
+        label = name
+        if endpoint.manufacturer:
+            label = f"{label} ({endpoint.manufacturer})"
+        if endpoint.blocked:
+            label = f"{label} - read-only"
+        # Names are not unique on an Alexa account. Two identical rows of
+        # checkboxes are unpickable, so disambiguate the repeats.
+        seen[label] = seen.get(label, 0) + 1
+        if seen[label] > 1:
+            label = f"{label} #{seen[label]}"
+        labelled.append((name.lower(), endpoint.endpoint_id, label))
+
+    return {endpoint_id: label for _, endpoint_id, label in sorted(labelled)}
 
 
 def _parse_bundle(raw: str) -> tuple[dict[str, Any], str | None]:
@@ -122,6 +152,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
         self._fingerprint: dict[str, str] | None = None
+        self._credentials: dict[str, Any] = {}
+        self._email: str | None = None
 
     # --- entry point --------------------------------------------------------
 
@@ -306,12 +338,62 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_finalize(
         self, credentials: dict[str, Any], email: str | None
     ) -> ConfigFlowResult:
-        """Create the entry from verified credentials, whichever path minted them."""
+        """Claim the account, then let the user pick which devices to bring in."""
         # Prefer the account identity over the device serial as the unique id, so
-        # re-registering the same account is recognised as a duplicate.
+        # re-registering the same account is recognised as a duplicate. Checked
+        # before the device picker so a duplicate aborts immediately rather than
+        # after the user has worked through a long list.
         unique_id = email or credentials["device_serial"]
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
+
+        self._credentials = credentials
+        self._email = email
+        return await self.async_step_select_devices()
+
+    async def async_step_select_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose which of the account's devices become entities.
+
+        An Alexa account commonly carries dozens of endpoints, most of which the
+        user has no interest in seeing in Home Assistant. Selecting here rather
+        than importing everything keeps the entity list to what was asked for.
+        """
+        if user_input is not None:
+            self._config[CONF_INCLUDE_ENDPOINTS] = user_input[CONF_INCLUDE_ENDPOINTS]
+            return self._create_entry()
+
+        try:
+            endpoints = await self._async_endpoints(self._credentials)
+        except WorksWithAlexaError as err:
+            # The credentials are already proven, so a listing failure is not
+            # worth discarding the login over: take everything and let the user
+            # narrow it from the options flow later.
+            _LOGGER.warning("Could not list devices to choose from: %s", err)
+            return self._create_entry()
+
+        choices = endpoint_choices(endpoints)
+        if not choices:
+            return self._create_entry()
+
+        return self.async_show_form(
+            step_id="select_devices",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_INCLUDE_ENDPOINTS, default=list(choices)
+                    ): cv.multi_select(choices)
+                }
+            ),
+            description_placeholders={"count": str(len(choices))},
+        )
+
+    def _create_entry(self) -> ConfigFlowResult:
+        """Write the entry from what the flow has gathered."""
+        credentials = self._credentials
+        email = self._email
+        unique_id = email or credentials["device_serial"]
 
         data = {
             CONF_URL: self._config[CONF_URL],
@@ -320,16 +402,19 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_REFRESH_TOKEN: credentials["refresh_token"],
             CONF_MAC_DMS: credentials["mac_dms"],
         }
-        options = {CONF_SCAN_INTERVAL: self._config[CONF_SCAN_INTERVAL]}
+        options: dict[str, Any] = {
+            CONF_SCAN_INTERVAL: self._config[CONF_SCAN_INTERVAL]
+        }
+        # Absent entirely means "everything", which is what a failed listing
+        # falls back to. An empty list means the user deliberately chose none.
+        if CONF_INCLUDE_ENDPOINTS in self._config:
+            options[CONF_INCLUDE_ENDPOINTS] = self._config[CONF_INCLUDE_ENDPOINTS]
+
         title = f"Works with Alexa ({email})" if email else "Works with Alexa"
         return self.async_create_entry(title=title, data=data, options=options)
 
-    async def _async_verify(self, credentials: dict[str, Any]) -> str | None:
-        """Drive a live session from the credentials and return the account email.
-
-        Raises :class:`AuthError` if the credentials are not accepted, or
-        :class:`WorksWithAlexaError` if Amazon could not be reached.
-        """
+    async def _async_session(self, credentials: dict[str, Any]) -> Any:
+        """A live session built from the credentials."""
         from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
         from .api import AmazonAlexaSession
@@ -342,7 +427,21 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             mac_dms=credentials["mac_dms"],
         )
         await session.async_setup()
+        return session
+
+    async def _async_verify(self, credentials: dict[str, Any]) -> str | None:
+        """Drive a live session from the credentials and return the account email.
+
+        Raises :class:`AuthError` if the credentials are not accepted, or
+        :class:`WorksWithAlexaError` if Amazon could not be reached.
+        """
+        session = await self._async_session(credentials)
         return await session.async_get_account_email()
+
+    async def _async_endpoints(self, credentials: dict[str, Any]) -> dict[str, Any]:
+        """Every endpoint on the account, for the device picker."""
+        session = await self._async_session(credentials)
+        return await session.async_get_endpoints()
 
     async def _async_identify(self, credentials: dict[str, Any]) -> str | None:
         """Best-effort account email for the login path.
@@ -417,15 +516,34 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
 
         current = self.config_entry.options
-        schema = vol.Schema(
-            {
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_SCAN_INTERVAL,
+                default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+        }
+
+        # The device picker is offered only while the entry is loaded, because
+        # the list comes from the coordinator's last poll. Without it the form
+        # still works for the polling interval.
+        choices = self._endpoint_choices()
+        if choices:
+            selected = current.get(CONF_INCLUDE_ENDPOINTS)
+            schema[
                 vol.Required(
-                    CONF_SCAN_INTERVAL,
-                    default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
-        )
-        return self.async_show_form(step_id="init", data_schema=schema)
+                    CONF_INCLUDE_ENDPOINTS,
+                    default=list(choices) if selected is None else selected,
+                )
+            ] = cv.multi_select(choices)
+
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
+
+    def _endpoint_choices(self) -> dict[str, str]:
+        """Device labels from the coordinator, or nothing if it is not loaded."""
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        if coordinator is None or not getattr(coordinator, "data", None):
+            return {}
+        return endpoint_choices(coordinator.data)
 
 
 class WorksWithAlexaCallbackView(HomeAssistantView):

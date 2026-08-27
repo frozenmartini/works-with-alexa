@@ -18,7 +18,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AmazonAlexaSession
-from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    CONF_INCLUDE_ENDPOINTS,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+)
 from .models import Endpoint
 from .protocol import AuthError, WorksWithAlexaError
 
@@ -44,6 +49,25 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             ),
         )
         self.session = session
+
+    @property
+    def selected(self) -> dict[str, Endpoint]:
+        """The endpoints the user chose to bring into Home Assistant.
+
+        Polling stays account-wide -- one bulk query returns everything either
+        way -- so this filters what becomes an entity, not what is fetched. A
+        missing option means the selection was never made and everything is
+        included; an empty list means the user chose nothing.
+        """
+        include = self.config_entry.options.get(CONF_INCLUDE_ENDPOINTS)
+        if include is None:
+            return self.data
+        allowed = set(include)
+        return {
+            endpoint_id: endpoint
+            for endpoint_id, endpoint in self.data.items()
+            if endpoint_id in allowed
+        }
 
     async def _async_update_data(self) -> dict[str, Endpoint]:
         """Fetch every endpoint, keyed by endpoint id."""

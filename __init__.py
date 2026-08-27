@@ -74,8 +74,18 @@ async def async_setup_entry(
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+    # The device selection and the polling interval are both read at setup, so
+    # changing either from the options flow needs the entry to come back up.
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_options_updated(
+    hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
+) -> None:
+    """Reload so new options take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(
