@@ -1,0 +1,111 @@
+"""Client-generated device fingerprints for the login flow.
+
+Every value here is minted on the client; Amazon issues none of them. The
+constructions mirror alexa-cookie2's ``lib/proxy.js`` (documented in ref/10,
+answered by 02-livingroom on threads/002 Q7), with one deliberate, safe
+divergence: alexa-cookie2 fills ``frc`` from ``Math.random()``; we use a CSPRNG,
+which Amazon cannot distinguish and which is strictly better.
+
+The ``deviceId`` construction is the load-bearing one. alexapy hex-encodes the
+device-type suffix a *second* time, producing a 120-char id whose
+``client_id=device:<id>`` carries no device-type marker -- the leading suspect
+for why Amazon blocks alexapy's login while accepting alexa-cookie2's. We follow
+alexa-cookie2 exactly: 92 chars, the suffix appended already-hex-encoded.
+
+These are stable per registration: mint once, persist, and reuse on every later
+login. A fingerprint that churns each login is precisely what anti-abuse looks
+for.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import secrets
+
+# lib/proxy.js:18. Bump only if Amazon starts rejecting logins.
+ALEXA_APP_VERSION = "2.2.651540.0"
+
+# Hex of the ASCII "#A2IVLV5VM2W81" -- the device-type marker, appended to the
+# device id already hex-encoded. Getting this wrong (e.g. double-encoding, as
+# alexapy does) is the suspected cause of the login block.
+_DEVICE_TYPE_SUFFIX = "23413249564c5635564d32573831"
+
+_FRC_BYTES = 313
+_DEVICE_SERIAL_BYTES = 16
+_PKCE_VERIFIER_BYTES = 32
+
+
+def generate_frc() -> str:
+    """A 313-byte device-context blob, base64.
+
+    alexa-cookie2 uses ``Math.random()*255`` (so never emits ``0xFF``); a CSPRNG
+    is indistinguishable to Amazon and avoids that quirk.
+    """
+    return base64.b64encode(secrets.token_bytes(_FRC_BYTES)).decode("ascii")
+
+
+def generate_map_md() -> str:
+    """Base64 of a fixed device-metadata JSON literal (no randomness).
+
+    Emitted with no whitespace so the bytes match alexa-cookie2's literal
+    exactly; ``json.dumps`` defaults would insert spaces.
+    """
+    literal = json.dumps(
+        {
+            "device_user_dictionary": [],
+            "device_registration_data": {"software_version": "1"},
+            "app_identifier": {
+                "app_version": ALEXA_APP_VERSION,
+                "bundle_id": "com.amazon.echo",
+            },
+        },
+        separators=(",", ":"),
+    )
+    return base64.b64encode(literal.encode("utf-8")).decode("ascii")
+
+
+def generate_device_id() -> str:
+    """A 92-char device id for ``openid.oa2.client_id=device:<deviceId>``.
+
+    16 random bytes -> uppercase hex (32 ASCII) -> hex-encode that ASCII again
+    (64) -> append the already-hex-encoded device-type suffix (28). The suffix
+    must be appended *once* hex-encoded, not twice.
+    """
+    serial_ascii = secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex().upper()
+    return serial_ascii.encode("ascii").hex() + _DEVICE_TYPE_SUFFIX
+
+
+def generate_device_serial() -> str:
+    """16 random bytes as hex -- the persisted ``device_serial`` for /auth/register.
+
+    Distinct from :func:`generate_device_id`, which draws its own random bytes.
+    """
+    return secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex()
+
+
+def generate_pkce() -> tuple[str, str]:
+    """Return ``(code_verifier, code_challenge)`` for the S256 PKCE exchange.
+
+    Standard RFC 7636: the challenge is the base64url SHA-256 of the verifier's
+    ASCII, both unpadded.
+    """
+    verifier = _b64url(secrets.token_bytes(_PKCE_VERIFIER_BYTES))
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    return verifier, challenge
+
+
+def new_fingerprint() -> dict[str, str]:
+    """Mint a complete fingerprint set to persist at first registration."""
+    return {
+        "frc": generate_frc(),
+        "map_md": generate_map_md(),
+        "device_id": generate_device_id(),
+        "device_serial": generate_device_serial(),
+    }
+
+
+def _b64url(data: bytes) -> str:
+    """URL-safe base64 without padding, as OAuth PKCE expects."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
