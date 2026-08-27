@@ -146,6 +146,10 @@ class LoginRelay:
             _LOGGER.warning("Relay upstream error for %s: %s", upstream, err)
             return web.Response(status=502, text="Upstream error")
 
+        # Capture cookies from every response, including the final one -- the
+        # session cookies the registration call needs may be set on maplanding.
+        self._capture_cookies(resp_headers)
+
         # Success: Amazon redirected to maplanding with the authorization code.
         location = resp_headers.get("Location", "")
         if code := self._detect_success(request, upstream, location):
@@ -153,7 +157,6 @@ class LoginRelay:
             target = self._callback_url or f"{self._proxy_base}"
             return web.HTTPFound(target)
 
-        self._capture_cookies(resp_headers)
         return self._build_response(status, resp_headers, raw, content_type, host)
 
     def _detect_success(
