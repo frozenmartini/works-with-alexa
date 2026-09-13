@@ -106,7 +106,8 @@ def _purge_deselected(
         return
 
     registry = dr.async_get(hass)
-    keep = set(coordinator.selected)
+    # Raw and built are separate lists; a device in either stays.
+    keep = set(coordinator.selected) | set(coordinator.built)
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
         ours = {
             identifier
@@ -138,7 +139,7 @@ async def async_remove_config_entry_device(
     ours = {
         identifier for domain, identifier in device.identifiers if domain == DOMAIN
     }
-    return not (ours & set(coordinator.selected))
+    return not (ours & (set(coordinator.selected) | set(coordinator.built)))
 
 
 async def _async_options_updated(

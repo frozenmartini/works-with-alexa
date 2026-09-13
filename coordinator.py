@@ -19,11 +19,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import AmazonAlexaSession
 from .const import (
+    CONF_BUILT_ENDPOINTS,
     CONF_INCLUDE_ENDPOINTS,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .features import default_built
 from .models import Endpoint
 from .protocol import AuthError, WorksWithAlexaError
 
@@ -52,7 +54,7 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
 
     @property
     def selected(self) -> dict[str, Endpoint]:
-        """The endpoints the user chose to bring into Home Assistant.
+        """The endpoints the user chose to expose raw, one entity per feature.
 
         Polling stays account-wide -- one bulk query returns everything either
         way -- so this filters what becomes an entity, not what is fetched. A
@@ -63,6 +65,28 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
         if include is None:
             return self.data
         allowed = set(include)
+        return {
+            endpoint_id: endpoint
+            for endpoint_id, endpoint in self.data.items()
+            if endpoint_id in allowed
+        }
+
+    @property
+    def built(self) -> dict[str, Endpoint]:
+        """The endpoints that also get an assembled entity (today: a fan).
+
+        A separate list from :attr:`selected`, by owner request: a device may
+        be raw, built, or both. With no choice recorded the fans with an
+        ordered speed mode are built, which keeps the Window Fan as it was.
+        """
+        chosen = self.config_entry.options.get(CONF_BUILT_ENDPOINTS)
+        if chosen is None:
+            return {
+                endpoint_id: endpoint
+                for endpoint_id, endpoint in self.data.items()
+                if default_built(endpoint)
+            }
+        allowed = set(chosen)
         return {
             endpoint_id: endpoint
             for endpoint_id, endpoint in self.data.items()

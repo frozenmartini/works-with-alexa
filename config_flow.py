@@ -63,6 +63,7 @@ from .const import (
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
     CONF_HASS_URL,
+    CONF_BUILT_ENDPOINTS,
     CONF_INCLUDE_ENDPOINTS,
     CONF_MAC_DMS,
     CONF_OTP_SECRET,
@@ -80,6 +81,7 @@ from .const import (
     SUPPORTED_DOMAINS,
 )
 from .fingerprint import alexa_media_device_serial
+from .features import default_built, is_fan
 from .models import produces_entities
 from .protocol import AuthError, WorksWithAlexaError
 from .totp import InvalidSecret, normalize_secret, seconds_remaining, totp_code
@@ -118,6 +120,28 @@ def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
         labelled.append((name.lower(), endpoint.endpoint_id, label))
 
     return {endpoint_id: label for _, endpoint_id, label in sorted(labelled)}
+
+
+def built_choices(endpoints: dict[str, Any]) -> dict[str, str]:
+    """Endpoint id -> label, for the built-devices picker: the fans.
+
+    The built layer is chosen apart from the raw one by owner request; today
+    the only assembled entity is a fan, so only fans are offered.
+    """
+    return {
+        endpoint_id: label
+        for endpoint_id, label in endpoint_choices(endpoints).items()
+        if is_fan(endpoints[endpoint_id])
+    }
+
+
+def default_built_ids(endpoints: dict[str, Any], offered: dict[str, str]) -> list[str]:
+    """What the built picker shows ticked when no choice has been recorded."""
+    return [
+        endpoint_id
+        for endpoint_id in offered
+        if endpoint_id in endpoints and default_built(endpoints[endpoint_id])
+    ]
 
 
 def _parse_bundle(raw: str) -> tuple[dict[str, Any], str | None]:
@@ -184,6 +208,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._credentials: dict[str, Any] = {}
         self._email: str | None = None
         self._choices: dict[str, str] = {}
+        self._built_choices: dict[str, str] = {}
+        self._built_default: list[str] = []
         # Which sign-in form started the relay, so a failure returns to it.
         self._login_step: str = "login"
         # What the relay types into Amazon's pages on the alexa_media_player-
@@ -733,6 +759,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return self._create_entry()
 
         self._choices = endpoint_choices(endpoints)
+        self._built_choices = built_choices(endpoints)
+        self._built_default = default_built_ids(endpoints, self._built_choices)
         if not self._choices:
             return self._create_entry()
 
@@ -745,23 +773,36 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_devices_pick(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Tick the devices to bring in, starting from none."""
+        """Tick the devices to expose raw, starting from none; built ones apart."""
+        built = self._built_choices
         if user_input is not None:
             self._config[CONF_INCLUDE_ENDPOINTS] = user_input[CONF_INCLUDE_ENDPOINTS]
+            if built:
+                self._config[CONF_BUILT_ENDPOINTS] = user_input.get(
+                    CONF_BUILT_ENDPOINTS, []
+                )
             return self._create_entry()
 
+        schema: dict[Any, Any] = {
+            # Starts empty: opting in beats opting out when the account
+            # carries far more devices than anyone wants in Home
+            # Assistant. Optional so submitting nothing is allowed.
+            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=list): cv.multi_select(
+                self._choices
+            ),
+        }
+        if built:
+            # The built layer, kept apart: ticked by default where a fan has an
+            # ordered speed mode, which is the Window Fan as it has always been.
+            schema[
+                vol.Optional(
+                    CONF_BUILT_ENDPOINTS,
+                    default=list(self._built_default),
+                )
+            ] = cv.multi_select(built)
         return self.async_show_form(
             step_id="devices_pick",
-            data_schema=vol.Schema(
-                {
-                    # Starts empty: opting in beats opting out when the account
-                    # carries far more devices than anyone wants in Home
-                    # Assistant. Optional so submitting nothing is allowed.
-                    vol.Optional(
-                        CONF_INCLUDE_ENDPOINTS, default=list
-                    ): cv.multi_select(self._choices)
-                }
-            ),
+            data_schema=vol.Schema(schema),
             description_placeholders={"count": str(len(self._choices))},
         )
 
@@ -777,6 +818,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Set the account up with no devices; add them later from options."""
         self._config[CONF_INCLUDE_ENDPOINTS] = []
+        self._config[CONF_BUILT_ENDPOINTS] = []
         return self._create_entry()
 
     def _create_entry(self) -> ConfigFlowResult:
@@ -803,6 +845,9 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # falls back to. An empty list means the user deliberately chose none.
         if CONF_INCLUDE_ENDPOINTS in self._config:
             options[CONF_INCLUDE_ENDPOINTS] = self._config[CONF_INCLUDE_ENDPOINTS]
+        # Same rule for the built layer: absent means the default fans.
+        if CONF_BUILT_ENDPOINTS in self._config:
+            options[CONF_BUILT_ENDPOINTS] = self._config[CONF_BUILT_ENDPOINTS]
 
         title = f"Works with Alexa ({email})" if email else "Works with Alexa"
         return self.async_create_entry(title=title, data=data, options=options)
@@ -961,10 +1006,14 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
     async def async_step_devices_pick(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit the selection, starting from what is currently in use."""
+        """Edit both selections, starting from what is currently in use."""
         choices = self._endpoint_choices()
+        built = self._built_choices()
         if user_input is not None:
-            return self._save(user_input[CONF_INCLUDE_ENDPOINTS])
+            return self._save(
+                user_input[CONF_INCLUDE_ENDPOINTS],
+                user_input.get(CONF_BUILT_ENDPOINTS, []) if built else None,
+            )
 
         selected = self.config_entry.options.get(CONF_INCLUDE_ENDPOINTS)
         if selected is None:
@@ -981,29 +1030,46 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
                 endpoint_id for endpoint_id in choices if endpoint_id in selected
             ]
 
+        schema: dict[Any, Any] = {
+            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=default): cv.multi_select(
+                choices
+            ),
+        }
+        if built:
+            # The built layer, apart from the raw one. Same rule as the raw
+            # list: what the form shows ticked must be what is in use today.
+            chosen = self.config_entry.options.get(CONF_BUILT_ENDPOINTS)
+            if chosen is None:
+                built_default = default_built_ids(self._endpoints(), built)
+            else:
+                built_default = [
+                    endpoint_id for endpoint_id in built if endpoint_id in chosen
+                ]
+            schema[
+                vol.Optional(CONF_BUILT_ENDPOINTS, default=built_default)
+            ] = cv.multi_select(built)
+
         return self.async_show_form(
             step_id="devices_pick",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_INCLUDE_ENDPOINTS, default=default
-                    ): cv.multi_select(choices)
-                }
-            ),
+            data_schema=vol.Schema(schema),
             description_placeholders={"count": str(len(choices))},
         )
 
     async def async_step_devices_all(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Every device raw; the built list is left as it is."""
         return self._save(list(self._endpoint_choices()))
 
     async def async_step_devices_none(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self._save([])
+        """No devices at all, raw or built."""
+        return self._save([], [])
 
-    def _save(self, include: list[str] | None = None) -> ConfigFlowResult:
+    def _save(
+        self, include: list[str] | None = None, built: list[str] | None = None
+    ) -> ConfigFlowResult:
         """Write options, keeping whatever this pass did not touch."""
         options: dict[str, Any] = {
             **self.config_entry.options,
@@ -1011,14 +1077,24 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         }
         if include is not None:
             options[CONF_INCLUDE_ENDPOINTS] = include
+        if built is not None:
+            options[CONF_BUILT_ENDPOINTS] = built
         return self.async_create_entry(data=options)
 
-    def _endpoint_choices(self) -> dict[str, str]:
-        """Device labels from the coordinator, or nothing if it is not loaded."""
+    def _endpoints(self) -> dict[str, Any]:
+        """The coordinator's endpoints, or nothing if the entry is not loaded."""
         coordinator = getattr(self.config_entry, "runtime_data", None)
         if coordinator is None or not getattr(coordinator, "data", None):
             return {}
-        return endpoint_choices(coordinator.data)
+        return coordinator.data
+
+    def _endpoint_choices(self) -> dict[str, str]:
+        """Labels for the raw picker."""
+        return endpoint_choices(self._endpoints())
+
+    def _built_choices(self) -> dict[str, str]:
+        """Labels for the built picker: the fans."""
+        return built_choices(self._endpoints())
 
 
 class WorksWithAlexaCallbackView(HomeAssistantView):

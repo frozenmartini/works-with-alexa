@@ -95,7 +95,12 @@ CONF_PROXY_WARNING: Final = "proxy_warning"
 # the browser may not reach it either.
 HASS_URL_CHECK_TIMEOUT: Final = 10
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+# The raw layer: endpoints exposed one entity per feature. Absent means all.
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
+# The built layer, kept apart from the raw one by owner request (2026-09-13):
+# endpoints that also get an assembled entity -- today a fan. Absent means the
+# fans with an ordered speed mode, which is the Window Fan as it has always been.
+CONF_BUILT_ENDPOINTS: Final = "built_endpoints"
 CONF_EXCLUDE_ENDPOINTS: Final = "exclude_endpoints"
 CONF_READ_ONLY_ENDPOINTS: Final = "read_only_endpoints"
 

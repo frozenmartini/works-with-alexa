@@ -78,9 +78,14 @@
       },
       "devices_pick": {
         "title": "Choose devices",
-        "description": "Tick each of the {count} devices you want in Home Assistant. Anything left unticked is not added.",
+        "description": "Tick each of the {count} devices you want exposed raw: one entity per Alexa feature (switch, select, number, sensor, lock), exactly as Alexa reports it. Built devices are assembled entities kept apart from the raw ones; today that is a fan with speed and oscillation. A device may be in both lists.",
         "data": {
-          "include_endpoints": "Devices"
+          "include_endpoints": "Raw devices",
+          "built_endpoints": "Built devices"
+        },
+        "data_description": {
+          "include_endpoints": "One entity per feature, nothing assembled.",
+          "built_endpoints": "A fan entity assembled from power, speed and direction."
         }
       },
       "reauth_confirm": {
@@ -124,15 +129,20 @@
         "menu_options": {
           "devices_keep": "Leave devices as they are",
           "devices_pick": "Choose devices individually",
-          "devices_all": "Add all devices",
-          "devices_none": "Remove all devices"
+          "devices_all": "Add all devices (raw)",
+          "devices_none": "Remove all devices (raw and built)"
         }
       },
       "devices_pick": {
         "title": "Choose devices",
-        "description": "Tick each of the {count} devices you want. Unticking one deletes its entities.",
+        "description": "Tick each of the {count} devices you want exposed raw: one entity per Alexa feature (switch, select, number, sensor, lock). Built devices are assembled entities kept apart from the raw ones; today that is a fan with speed and oscillation. A device may be in both lists. Unticking one deletes its entities.",
         "data": {
-          "include_endpoints": "Devices"
+          "include_endpoints": "Raw devices",
+          "built_endpoints": "Built devices"
+        },
+        "data_description": {
+          "include_endpoints": "One entity per feature, nothing assembled.",
+          "built_endpoints": "A fan entity assembled from power, speed and direction."
         }
       }
     }

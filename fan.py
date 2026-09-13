@@ -1,12 +1,13 @@
-"""Fan entities for Works with Alexa.
+"""Fan entities for Works with Alexa -- the *built* layer.
 
-One fan entity per controllable FAN endpoint: power from the ``power`` feature,
-and speed from an ORDERED ``mode`` feature labelled as speed (the Window Fan's
-Low..Turbo). A fan whose speed is a numeric range keeps that range as a raw
-number instead; nothing else is folded in, by the owner's 2026-09-13 steer to
-expose features raw rather than assemble them. Direction is presented as
-oscillate by earlier user directive and *also* kept as a select -- Home
-Assistant's oscillate cannot show "Exhaust"/"Direct" (ref/07).
+The one assembled entity, kept apart from the raw one-entity-per-feature layer
+by owner request (2026-09-13) and chosen through its own option. One fan per
+built FAN endpoint: power from the ``power`` feature, speed from an ORDERED
+``mode`` feature labelled as speed (the Window Fan's Low..Turbo), and Direction
+presented as oscillate by earlier user directive (ref/07). The same features
+also appear raw -- a Power switch, a Fan Speed select, a Direction select --
+when the device is in the raw list; the two layers never collide because the
+fan lives on its own platform.
 """
 
 from __future__ import annotations
@@ -38,9 +39,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
+    # The built layer: chosen separately from the raw device list.
     entities = [
         WorksWithAlexaFan(coordinator, endpoint)
-        for endpoint in coordinator.selected.values()
+        for endpoint in coordinator.built.values()
         if is_fan(endpoint)
     ]
     _LOGGER.debug("Adding %d fans", len(entities))
