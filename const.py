@@ -83,6 +83,17 @@ ALEXA_MEDIA_OAUTH: Final = "oauth"
 
 CONF_HASS_URL: Final = "hass_url"
 CONF_PUBLIC_URL: Final = "public_url"
+
+# Sign in the alexa_media_player way: credentials taken up front and typed into
+# Amazon's own pages by the relay, including the 2SV one-time code made from the
+# authenticator app key. Email, password and key live only in the config flow;
+# none is persisted -- the entry keeps the refresh token, as on every path.
+CONF_OTP_SECRET: Final = "otp_secret"
+CONF_TOTP_REGISTER: Final = "registered"
+CONF_PROXY_WARNING: Final = "proxy_warning"
+# Seconds Home Assistant gets to fetch its own URL before the flow warns that
+# the browser may not reach it either.
+HASS_URL_CHECK_TIMEOUT: Final = 10
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
 CONF_EXCLUDE_ENDPOINTS: Final = "exclude_endpoints"

@@ -19,6 +19,8 @@ server around them.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping
+from html import escape as html_escape
 from urllib.parse import urlsplit
 
 # The exact host set alexa-cookie2 proxies: www/alexa/bare for the marketplace,
@@ -113,6 +115,61 @@ def rewrite_location(
 
 def is_amazon_host(host: str, hosts: list[str]) -> bool:
     return host in hosts
+
+
+# --- form autofill ------------------------------------------------------------
+# alexa_media_player's proxy fills the sign-in form server-side so the user only
+# clicks through (alexapy's ``AlexaProxy.autofill``, via BeautifulSoup). The same
+# here, on the raw HTML: an <input> whose name we hold a value for, and which has
+# no value of its own, gets one. Inputs that already carry a value are left
+# alone -- Amazon's password page repeats the email as a hidden, filled input,
+# and overwriting that would be wrong.
+_INPUT_TAG = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_NAME_ATTR = re.compile(
+    r"""(?<![\w-])name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>/]+))""", re.IGNORECASE
+)
+_VALUE_ATTR = re.compile(
+    r"""(?<![\w-])value\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>/]+))""", re.IGNORECASE
+)
+
+
+def autofill_inputs(
+    html: str, values: Mapping[str, str | Callable[[], str]]
+) -> str:
+    """Fill ``<input name=...>`` tags in ``html`` from ``values``.
+
+    A value may be a callable, evaluated only when a matching input is actually
+    on the page -- so a one-time code is generated for the page that asks for
+    it, at the moment it asks, not once up front. Values are HTML-escaped; the
+    rest of each tag is untouched, and nothing else in the page is.
+    """
+    if not values:
+        return html
+
+    def fill(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        name_match = _NAME_ATTR.search(tag)
+        if not name_match:
+            return tag
+        name = next(group for group in name_match.groups() if group is not None)
+        if name not in values:
+            return tag
+        value_match = _VALUE_ATTR.search(tag)
+        if value_match and any(value_match.groups()):
+            return tag  # already filled; not ours to change
+        value = values[name]
+        if callable(value):
+            value = value()
+        if not value:
+            return tag
+        attr = f'value="{html_escape(value, quote=True)}"'
+        if value_match:  # value="" -- replace the empty attribute in place
+            return tag[: value_match.start()] + attr + tag[value_match.end() :]
+        if tag.endswith("/>"):
+            return f"{tag[:-2].rstrip()} {attr}/>"
+        return f"{tag[:-1].rstrip()} {attr}>"
+
+    return _INPUT_TAG.sub(fill, html)
 
 
 def maplanding_code(url: str) -> str | None:

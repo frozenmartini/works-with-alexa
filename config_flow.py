@@ -9,6 +9,11 @@ to a callback view that resumes this flow.
 Structure follows the proven ``alexa_media`` flow; the difference that matters is
 :class:`~.auth_proxy.LoginRelay`, our own same-origin rewriting proxy driven with the correct
 device fingerprint instead of alexapy's blocked one.
+
+Two sign-in forms feed that relay. ``login`` hands the user a blank Amazon page;
+``login_password`` takes email, password and the 2SV authenticator key up front
+and has the relay fill them in, which is how ``alexa_media`` drives the same
+registration. The import paths skip the relay entirely.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import json
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest
@@ -30,11 +36,18 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError, get_url
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 from homeassistant.helpers.storage import Store
 
 from .auth_proxy import LoginRelay
@@ -52,19 +65,24 @@ from .const import (
     CONF_HASS_URL,
     CONF_INCLUDE_ENDPOINTS,
     CONF_MAC_DMS,
+    CONF_OTP_SECRET,
+    CONF_PROXY_WARNING,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    CONF_TOTP_REGISTER,
     CONF_URL,
     DEFAULT_DOMAIN,
     DEFAULT_HASS_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    HASS_URL_CHECK_TIMEOUT,
     MIN_SCAN_INTERVAL,
     SUPPORTED_DOMAINS,
 )
 from .fingerprint import alexa_media_device_serial
 from .models import produces_entities
 from .protocol import AuthError, WorksWithAlexaError
+from .totp import InvalidSecret, normalize_secret, seconds_remaining, totp_code
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,25 +184,38 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._credentials: dict[str, Any] = {}
         self._email: str | None = None
         self._choices: dict[str, str] = {}
+        # Which sign-in form started the relay, so a failure returns to it.
+        self._login_step: str = "login"
+        # What the relay types into Amazon's pages on the alexa_media_player-
+        # style path. Flow memory only: never written to the entry or logged.
+        self._autofill: dict[str, str] | None = None
+        self._hass_url_error: str | None = None
 
     # --- entry point --------------------------------------------------------
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Offer adoption of existing credentials, or a fresh Amazon sign-in.
+        """Offer adoption of existing credentials, or a fresh Amazon sign-in."""
+        return self.async_show_menu(step_id="user", menu_options=self._menu_options())
 
-        The working paths come first. ``login`` is listed last and labelled as
-        unfinished: Amazon serves a proof-of-work CVF challenge whose widget
-        loads from a CDN host the relay cannot proxy, so a fresh registration
-        cannot currently complete (threads/002 Q9, Q12).
+    def _menu_options(self) -> list[str]:
+        """The ways in, working ones first; shared by setup and reauth.
+
+        ``login`` is listed last and labelled as unfinished: Amazon serves a
+        proof-of-work CVF challenge whose widget loads from a CDN host the relay
+        cannot proxy, so a fresh registration through a blank sign-in has not
+        completed (threads/002 Q9, Q12). ``login_password`` is the same
+        registration driven the way alexa_media_player drives it -- credentials
+        and the 2SV code filled in for the user -- offered because that flow
+        does complete for that integration.
         """
-        options = ["import_token", "login"]
+        options = ["import_token", "login_password", "login"]
         if self._alexa_media_accounts():
             # Only worth offering when there is actually something to borrow --
             # and it is the path that works, so it leads.
             options.insert(0, "import_alexa_media")
-        return self.async_show_menu(step_id="user", menu_options=options)
+        return options
 
     def _default_hass_url(self) -> str:
         """This instance's own URL, for the browser to reach the relay on."""
@@ -193,30 +224,223 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         except NoURLAvailableError:
             return DEFAULT_HASS_URL
 
-    async def async_step_login(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the marketplace domain and the URL the browser will reach."""
-        if user_input is not None:
-            self._config[CONF_URL] = user_input[CONF_URL]
-            self._config[CONF_HASS_URL] = user_input[CONF_HASS_URL].rstrip("/")
-            self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
-            return await self.async_step_start_proxy()
-
-        schema = vol.Schema(
+    def _login_schema(self) -> vol.Schema:
+        """The blank sign-in: marketplace, the URL the browser reaches, polling."""
+        return vol.Schema(
             {
                 vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
                     SUPPORTED_DOMAINS
                 ),
-                vol.Required(
-                    CONF_HASS_URL, default=self._default_hass_url()
-                ): str,
+                vol.Required(CONF_HASS_URL, default=self._default_hass_url()): str,
                 vol.Required(
                     CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
                 ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
             }
         )
-        return self.async_show_form(step_id="login", data_schema=schema)
+
+    def _password_schema(self) -> vol.Schema:
+        """alexa_media_player's form: the same fields plus the credentials."""
+        return vol.Schema(
+            {
+                vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
+                    SUPPORTED_DOMAINS
+                ),
+                vol.Required(CONF_EMAIL): TextSelector(
+                    TextSelectorConfig(
+                        type=TextSelectorType.EMAIL, autocomplete="username"
+                    )
+                ),
+                vol.Required(CONF_PASSWORD): TextSelector(
+                    TextSelectorConfig(
+                        type=TextSelectorType.PASSWORD,
+                        autocomplete="current-password",
+                    )
+                ),
+                vol.Optional(CONF_OTP_SECRET): str,
+                vol.Required(CONF_HASS_URL, default=self._default_hass_url()): str,
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+            }
+        )
+
+    def _show_login_form(
+        self,
+        step_id: str,
+        *,
+        suggested: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        """Render one of the two sign-in forms, prefilled but not defaulted.
+
+        Suggested values keep a required field required: an empty email or
+        password is refused by the frontend rather than sent through.
+        """
+        schema = (
+            self._password_schema()
+            if step_id == "login_password"
+            else self._login_schema()
+        )
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
+        )
+
+    async def async_step_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the marketplace domain and the URL the browser will reach."""
+        self._login_step = "login"
+        self._autofill = None
+        if user_input is not None:
+            self._config[CONF_URL] = user_input[CONF_URL]
+            self._config[CONF_HASS_URL] = user_input[CONF_HASS_URL].rstrip("/")
+            self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+            return await self.async_step_start_proxy()
+        return self._show_login_form("login", suggested=self._config)
+
+    # --- sign in the alexa_media_player way ---------------------------------
+
+    async def async_step_login_password(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Take the credentials up front and have the relay type them in.
+
+        The registration is the same one ``login`` performs, through the same
+        relay; what changes is that Amazon's pages arrive with the email,
+        password and -- given the 2SV authenticator key -- the one-time code
+        already filled in, so the user only clicks through. That is how
+        alexa_media_player signs in, and it is the flow known to complete.
+
+        The credentials live in this flow's memory and go no further: the entry
+        keeps the refresh token, as on every other path, never a password.
+        """
+        self._login_step = "login_password"
+        if user_input is None:
+            return self._show_login_form("login_password", suggested=self._config)
+
+        errors: dict[str, str] = {}
+        secret = ""
+        if raw := (user_input.get(CONF_OTP_SECRET) or "").strip():
+            try:
+                secret = normalize_secret(raw)
+            except InvalidSecret:
+                errors[CONF_OTP_SECRET] = "2fa_key_invalid"
+        if errors:
+            return self._show_login_form(
+                "login_password", suggested=user_input, errors=errors
+            )
+
+        self._config[CONF_URL] = user_input[CONF_URL]
+        self._config[CONF_HASS_URL] = user_input[CONF_HASS_URL].rstrip("/")
+        self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+        self._autofill = {
+            CONF_EMAIL: user_input[CONF_EMAIL].strip(),
+            CONF_PASSWORD: user_input[CONF_PASSWORD],
+            CONF_OTP_SECRET: secret,
+        }
+
+        # alexa_media_player checks that Home Assistant can fetch the URL the
+        # browser is about to be sent to, and lets the user override a failure.
+        # A wrong URL is the commonest way that flow goes nowhere, so keep it.
+        self._hass_url_error = await self._async_hass_url_error(
+            self._config[CONF_HASS_URL]
+        )
+        if self._hass_url_error is not None:
+            return await self.async_step_proxy_warning()
+        return await self._async_after_url_check()
+
+    async def _async_hass_url_error(self, hass_url: str) -> str | None:
+        """Why Home Assistant itself cannot fetch ``hass_url``; None if it can."""
+        session = async_get_clientsession(self.hass)
+        try:
+            async with session.get(
+                hass_url, timeout=aiohttp.ClientTimeout(total=HASS_URL_CHECK_TIMEOUT)
+            ) as response:
+                if response.status < 400:
+                    return None
+                return f"HTTP {response.status}"
+        except (aiohttp.ClientError, TimeoutError) as err:
+            return str(err) or type(err).__name__
+
+    async def async_step_proxy_warning(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Home Assistant could not reach the URL given for the relay.
+
+        Say so and let the user continue anyway, as alexa_media_player does:
+        the browser's view of the network is the one that matters, and it can
+        differ from the server's (a hostname only the LAN resolves, a
+        certificate only the browser trusts).
+        """
+        if user_input is None:
+            return self.async_show_form(
+                step_id="proxy_warning",
+                data_schema=vol.Schema(
+                    {vol.Optional(CONF_PROXY_WARNING, default=False): bool}
+                ),
+                description_placeholders={
+                    "hass_url": self._config[CONF_HASS_URL],
+                    "error": self._hass_url_error or "",
+                },
+            )
+        if not user_input.get(CONF_PROXY_WARNING):
+            # Back to the form with everything still filled in.
+            return self._show_login_form(
+                "login_password", suggested={**self._config, **(self._autofill or {})}
+            )
+        return await self._async_after_url_check()
+
+    async def _async_after_url_check(self) -> ConfigFlowResult:
+        """Confirm the 2SV code when there is a key to make one from, else go."""
+        if self._autofill and self._autofill.get(CONF_OTP_SECRET):
+            return await self.async_step_totp_register()
+        return await self.async_step_start_proxy()
+
+    async def async_step_totp_register(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the code the key produces, to be checked against Amazon's.
+
+        A key copied wrong still decodes and still yields plausible six-digit
+        codes; only comparing one with the authenticator app catches that
+        before the sign-in fails on it. Same step and semantics as
+        alexa_media_player: unticked shows a fresh code, ticked proceeds.
+        """
+        if user_input is not None and user_input.get(CONF_TOTP_REGISTER):
+            return await self.async_step_start_proxy()
+        assert self._autofill is not None
+        return self.async_show_form(
+            step_id="totp_register",
+            data_schema=vol.Schema(
+                {vol.Optional(CONF_TOTP_REGISTER, default=False): bool}
+            ),
+            description_placeholders={
+                "email": self._autofill[CONF_EMAIL],
+                "url": self._config[CONF_URL],
+                "code": totp_code(self._autofill[CONF_OTP_SECRET]),
+                "seconds": str(seconds_remaining()),
+            },
+        )
+
+    def _relay_autofill(self) -> dict[str, Any] | None:
+        """What the relay types into Amazon's forms, keyed by input name.
+
+        The one-time code is a callable, evaluated when the 2SV page is actually
+        served. alexapy's proxy generates it once when the form is submitted,
+        which leaves it stale by the time the user has clicked past the
+        password page; generating it on demand costs nothing.
+        """
+        if not self._autofill:
+            return None
+        values: dict[str, Any] = {
+            "email": self._autofill[CONF_EMAIL],
+            "password": self._autofill[CONF_PASSWORD],
+        }
+        if secret := self._autofill.get(CONF_OTP_SECRET):
+            values["otpCode"] = lambda: totp_code(secret)
+        return values
 
     # --- credential import --------------------------------------------------
 
@@ -395,6 +619,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             AUTH_PROXY_PATH,
             proxy_base,
             fingerprint=fingerprint,
+            autofill=self._relay_autofill(),
         )
         await WorksWithAlexaConfigFlow.proxy.async_start()
         self._fingerprint = WorksWithAlexaConfigFlow.proxy.fingerprint
@@ -626,32 +851,22 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return None
 
     def _retry_user(self, reason: str) -> ConfigFlowResult:
-        """Return to the first form with an error rather than aborting.
+        """Return to the sign-in form that started this attempt, with an error.
 
-        The previous answers are kept as the defaults: this form is shown after
-        a failed sign-in, and making the user re-derive their own URL from
-        scratch is the wrong moment to do it.
+        The previous answers are kept as the suggested values: this form is
+        shown after a failed sign-in, and making the user re-derive their own
+        URL -- or retype a password that was probably right -- is the wrong
+        moment to do it. The values stay in this flow's memory.
         """
-        previous_url = self._config.get(CONF_URL, DEFAULT_DOMAIN)
-        previous_hass_url = self._config.get(CONF_HASS_URL) or self._default_hass_url()
-        previous_interval = self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        suggested = {
+            CONF_URL: self._config.get(CONF_URL, DEFAULT_DOMAIN),
+            CONF_HASS_URL: self._config.get(CONF_HASS_URL) or self._default_hass_url(),
+            CONF_SCAN_INTERVAL: self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            **(self._autofill or {}),
+        }
         self._config = {}
-        return self.async_show_form(
-            step_id="login",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_URL, default=previous_url): vol.In(
-                        SUPPORTED_DOMAINS
-                    ),
-                    vol.Required(
-                        CONF_HASS_URL, default=previous_hass_url
-                    ): str,
-                    vol.Required(
-                        CONF_SCAN_INTERVAL, default=previous_interval
-                    ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-                }
-            ),
-            errors={"base": reason},
+        return self._show_login_form(
+            self._login_step, suggested=suggested, errors={"base": reason}
         )
 
     # --- reauth -------------------------------------------------------------
@@ -665,10 +880,15 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if user_input is None:
-            return self.async_show_form(step_id="reauth_confirm")
-        # Reuse the reauth entry's stored hass_url and scan interval. An entry
-        # created by one of the import paths never collected a hass_url, so fall
+        """Offer the same ways in as first-time setup.
+
+        Every path ends in :meth:`_async_finalize`, which under reauth updates
+        the existing entry instead of creating one. Going straight to the blank
+        sign-in, as this once did, made reauth depend on the one path that has
+        not completed.
+        """
+        # Prefill from the entry: its stored hass_url and scan interval. An
+        # entry created by an import path never collected a hass_url, so fall
         # back to this instance's own URL rather than a constant that is only
         # right by luck.
         entry = self._get_reauth_entry()
@@ -678,7 +898,9 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._config[CONF_SCAN_INTERVAL] = entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
-        return await self.async_step_start_proxy()
+        return self.async_show_menu(
+            step_id="reauth_confirm", menu_options=self._menu_options()
+        )
 
     @staticmethod
     @callback

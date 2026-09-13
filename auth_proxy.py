@@ -8,11 +8,17 @@ XHR is cross-origin and Amazon blocks the login (see ref/04 and threads/002 Q8).
 The rewriting rules live in :mod:`.relay` and are unit-tested. This module is the
 aiohttp plumbing around them plus the ``/auth/register`` exchange. It runs only
 inside a config flow and needs a live browser to exercise.
+
+Optionally the relay also fills Amazon's forms in as they pass through -- email,
+password and the 2SV one-time code -- which is how alexa_media_player's proxy
+lets the user click through a sign-in without typing. The relay itself is the
+same either way; the config flow decides whether to hand it credentials.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from http.cookies import SimpleCookie
 from typing import Any
 
@@ -30,6 +36,7 @@ from .login import (
 from .protocol import AuthError, extract_tokens, parse_json
 from .relay import (
     amazon_hosts,
+    autofill_inputs,
     host_from_proxy_path,
     maplanding_code,
     origin_for,
@@ -58,14 +65,20 @@ class LoginRelay:
         proxy_base: str,
         *,
         fingerprint: dict[str, str] | None = None,
+        autofill: Mapping[str, str | Callable[[], str]] | None = None,
     ) -> None:
         """``mount_path`` is the relay's path on HA (e.g. ``/auth/.../proxy``);
         ``proxy_base`` is the full browser-facing URL prefix ending in ``/``.
+
+        ``autofill`` maps Amazon input names (``email``, ``password``,
+        ``otpCode``) to the value to type into them, or to a callable producing
+        it on demand. Held in memory for the life of this relay and never logged.
         """
         self._domain = domain
         self._mount_path = mount_path
         self._proxy_base = proxy_base
         self._hosts = amazon_hosts(domain)
+        self._autofill = dict(autofill) if autofill else None
 
         self._fingerprint = fingerprint or new_fingerprint()
         self._verifier, challenge = generate_pkce()
@@ -232,7 +245,10 @@ class LoginRelay:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
                 text = raw.decode("latin-1")
-            body = replace_hosts(text, self._proxy_base, self._hosts).encode("utf-8")
+            text = replace_hosts(text, self._proxy_base, self._hosts)
+            if self._autofill and "text/html" in content_type.lower():
+                text = autofill_inputs(text, self._autofill)
+            body = text.encode("utf-8")
 
         response = web.Response(status=status, body=body, headers=out_headers)
         # Re-emit cookies scoped to the proxy origin: drop Secure (proxy may be
