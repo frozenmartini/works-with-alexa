@@ -1,10 +1,12 @@
 """Fan entities for Works with Alexa.
 
-One fan entity per controllable endpoint: power from the ``power`` feature, and
-speed from whichever ``mode`` feature is labelled as speed. Direction is
-deliberately *not* folded in here -- Home Assistant's fan direction is a
-forward/reverse pair, and the Window Fan's own labels are "Exhaust"/"Direct",
-which that mapping would hide. Direction gets its own select (ref/07).
+One fan entity per controllable FAN endpoint: power from the ``power`` feature,
+and speed from an ORDERED ``mode`` feature labelled as speed (the Window Fan's
+Low..Turbo). A fan whose speed is a numeric range keeps that range as a raw
+number instead; nothing else is folded in, by the owner's 2026-09-13 steer to
+expose features raw rather than assemble them. Direction is presented as
+oscillate by earlier user directive and *also* kept as a select -- Home
+Assistant's oscillate cannot show "Exhaust"/"Direct" (ref/07).
 """
 
 from __future__ import annotations
@@ -21,53 +23,13 @@ from homeassistant.util.percentage import (
 )
 
 from . import WorksWithAlexaConfigEntry
-from .const import (
-    CONTROLLABLE_CATEGORIES,
-    FAN_SPEED_LABELS,
-    OSCILLATE_OFF_LABEL,
-    OSCILLATE_ON_LABEL,
-)
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import WorksWithAlexaEntity
-from .models import Endpoint, Feature
+from .features import direction_feature as oscillation_feature
+from .features import is_fan, speed_feature
+from .models import FEATURE_MODE, FEATURE_POWER, Endpoint
 
 _LOGGER = logging.getLogger(__name__)
-
-FEATURE_POWER = "power"
-FEATURE_MODE = "mode"
-
-
-def speed_feature(endpoint: Endpoint) -> Feature | None:
-    """The ordered mode feature that represents speed, if the endpoint has one.
-
-    Only an ORDERED mode may become a percentage; an unordered one is a plain
-    choice and belongs in a select.
-    """
-    for feature in endpoint.features_named(FEATURE_MODE):
-        label = (feature.friendly_name or "").strip().lower()
-        if feature.ordered and feature.writable and label in FAN_SPEED_LABELS:
-            return feature
-    return None
-
-
-def oscillation_feature(endpoint: Endpoint) -> tuple[Feature, str, str] | None:
-    """The mode feature standing in for oscillation, with its on/off values.
-
-    Returns the feature plus the option values meaning oscillating and not
-    oscillating, or None when the endpoint has no such pair.
-    """
-    for feature in endpoint.features_named(FEATURE_MODE):
-        if not feature.writable:
-            continue
-        values = {
-            option.friendly_name.strip().lower(): option.value
-            for option in feature.mode_options
-        }
-        on_value = values.get(OSCILLATE_ON_LABEL)
-        off_value = values.get(OSCILLATE_OFF_LABEL)
-        if on_value is not None and off_value is not None:
-            return feature, on_value, off_value
-    return None
 
 
 async def async_setup_entry(
@@ -79,10 +41,7 @@ async def async_setup_entry(
     entities = [
         WorksWithAlexaFan(coordinator, endpoint)
         for endpoint in coordinator.selected.values()
-        if not endpoint.blocked
-        and endpoint.display_category in CONTROLLABLE_CATEGORIES
-        and (power := endpoint.feature(FEATURE_POWER)) is not None
-        and power.writable
+        if is_fan(endpoint)
     ]
     _LOGGER.debug("Adding %d fans", len(entities))
     async_add_entities(entities)

@@ -14,6 +14,7 @@ drive the whole module:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,25 @@ FEATURE_THERMOSTAT = "thermostat"
 FEATURE_TEMPERATURE_SENSOR = "temperatureSensor"
 FEATURE_CONNECTIVITY = "connectivity"
 FEATURE_ENDPOINT_HEALTH = "endpointHealth"
+FEATURE_LOCK = "lock"
+FEATURE_INVENTORY = "inventory"
+FEATURE_ACTION = "action"
+
+# Features that never become sensors even though they report a value. Every
+# endpoint on the account -- phones, apps, scene triggers -- carries
+# connectivity, so a sensor per reachability flag would drag all 60 non-devices
+# into the picker. Reachability is reported as an attribute instead.
+_NEVER_SENSORS = frozenset({FEATURE_CONNECTIVITY, FEATURE_ENDPOINT_HEALTH})
+
+# Features that are sensors even when writable. An action's property is its
+# *status* (IDLE / RUNNING); its operation performs the action rather than
+# setting that status, so reading and driving it are different entities. The
+# Roborock's Robot.Clean advertised `performAction` in one capture and no
+# operations in another (2026-09-13), so the reading must not depend on it.
+_ALWAYS_SENSORS = frozenset({FEATURE_ACTION})
+
+# Splits camelCase for the label fallback: "temperatureSensor" -> "temperature Sensor".
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 # The property name a feature type reports its current value under.
@@ -46,7 +66,13 @@ _PRIMARY_PROPERTIES = {
     FEATURE_TOGGLE: ("toggleStateValue", "toggleState"),
     FEATURE_THERMOSTAT: ("targetSetpoint", "value", "thermostatModeValue"),
     FEATURE_TEMPERATURE_SENSOR: ("temperature", "value"),
-    FEATURE_CONNECTIVITY: ("connectivity", "reachability"),
+    FEATURE_CONNECTIVITY: ("reachabilityStatusValue", "connectivity", "reachability"),
+    # Names below come from a schema introspection (2026-09-13), not a capture
+    # write-up: `Lock.lockState`, `InventoryLevel.inventoryLevelValue`,
+    # `ActionState.actionStateValue`.
+    FEATURE_LOCK: ("lockState", "lockStateValue"),
+    FEATURE_INVENTORY: ("inventoryLevelValue",),
+    FEATURE_ACTION: ("actionStateValue",),
 }
 
 # Tried in order for feature types not listed above.
@@ -73,6 +99,18 @@ class ModeOption:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionOption:
+    """One action a feature can perform, or one target it can act on.
+
+    A vacuum's ``Robot.Clean`` offers actions Clean / Vacuum / Mop and targets
+    that are its rooms; ``Robot.Dock`` offers Dock / Empty and no targets.
+    """
+
+    id: str
+    friendly_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class Feature:
     """A single capability of an endpoint."""
 
@@ -91,6 +129,19 @@ class Feature:
     def friendly_name(self) -> str | None:
         """Human label, e.g. ``Fan Speed``. The instance alone does not say."""
         return _text(self.configuration.get("friendlyName"))
+
+    @property
+    def label(self) -> str:
+        """Best entity name: the device's own label, else a readable instance.
+
+        Inventory and action features carry no ``friendlyName`` at all, and a
+        ``temperatureSensor`` has no instance, so the fallback turns
+        ``Robot.Clean`` into ``Robot Clean`` and ``temperatureSensor`` into
+        ``Temperature Sensor`` rather than showing the wire spelling.
+        """
+        if self.friendly_name:
+            return self.friendly_name
+        return humanise(self.instance or self.name)
 
     @property
     def writable(self) -> bool:
@@ -175,6 +226,61 @@ class Feature:
                 return raw["scale"]
         return None
 
+    @property
+    def raw_value(self) -> Any:
+        """The primary property before unwrapping, for callers that need its
+        siblings -- an inventory level's ``type`` and ``unit`` sit next to its
+        ``value``."""
+        for prop in self._candidate_properties:
+            if prop in self.properties:
+                return self.properties[prop]
+        return None
+
+    # --- named properties ---------------------------------------------------
+    def property_value(self, name: str) -> Any:
+        """One named property, unwrapped, or ``None``.
+
+        The wire names every property, and a thermostat carries several of the
+        same type: ``targetSetpoint``, ``lowerSetpoint`` and ``upperSetpoint``
+        are three ``Setpoint`` entries told apart only by name.
+        """
+        if name not in self.properties:
+            return None
+        return _unwrap(self.properties[name])
+
+    def property_scale(self, name: str) -> str | None:
+        raw = self.properties.get(name)
+        return raw.get("scale") if isinstance(raw, dict) else None
+
+    @property
+    def supported_modes(self) -> list[str]:
+        """A thermostat's advertised modes, e.g. ``["OFF", "AUTO"]``.
+
+        Only 2 of the 6 enum values on the Anthem, all 4 HVAC ones on the
+        ecobee. Read per device; never offer the whole enum (ref/08).
+        """
+        return [str(mode) for mode in self.configuration.get("supportedModes") or []]
+
+    # --- action -------------------------------------------------------------
+    @property
+    def action_states(self) -> list[str]:
+        """The request states an action accepts: START / STOP / PAUSE / RESUME.
+
+        Distinct from the *reported* status (IDLE / RUNNING / PAUSED / ...).
+        """
+        return [
+            str(state)
+            for state in _get(self.configuration, "action", "supportedStates") or []
+        ]
+
+    @property
+    def actions(self) -> list[ActionOption]:
+        return _action_options(_get(self.configuration, "action", "supportedActions"))
+
+    @property
+    def targets(self) -> list[ActionOption]:
+        return _action_options(_get(self.configuration, "target", "supportedTargets"))
+
 
 @dataclass(frozen=True, slots=True)
 class Endpoint:
@@ -217,6 +323,18 @@ class Endpoint:
         """
         return (self.manufacturer or "").strip().lower() in BLOCKED_MANUFACTURERS
 
+    @property
+    def reachable(self) -> bool | None:
+        """Amazon's own reachability flag, or ``None`` when it is not reported.
+
+        ``connectivity`` reports ``OK`` or ``UNREACHABLE``; the Alexa app's
+        "device is unresponsive" comes from the same signal.
+        """
+        connectivity = self.feature(FEATURE_CONNECTIVITY)
+        if connectivity is None or connectivity.value is None:
+            return None
+        return str(connectivity.value).upper() == "OK"
+
     def live_value(self, feature: Feature) -> Any:
         """Current value, with the power-off sentinel filtered out.
 
@@ -244,14 +362,20 @@ def sensor_features(endpoint: Endpoint) -> list[Feature]:
     """Features that become read-only entities.
 
     A feature qualifies when it currently reports a value and is either
-    read-only or sits on a blocked endpoint -- a blocked endpoint's writable
-    features may only ever be read. Features carrying no value, such as
-    ``connectivity`` and ``endpointHealth``, would only ever be unknown.
+    read-only, an action (whose value is a status, not a setting), or sits on a
+    blocked endpoint -- a blocked endpoint's writable features may only ever be
+    read. Features carrying no value would only ever be unknown, and
+    ``connectivity`` is deliberately excluded (see ``_NEVER_SENSORS``).
     """
     return [
         feature
         for feature in endpoint.features.values()
-        if (not feature.writable or endpoint.blocked)
+        if feature.name not in _NEVER_SENSORS
+        and (
+            not feature.writable
+            or endpoint.blocked
+            or feature.name in _ALWAYS_SENSORS
+        )
         and endpoint.live_value(feature) is not None
     ]
 
@@ -330,9 +454,19 @@ def _flatten_properties(raw: Any) -> dict[str, Any]:
     for prop in raw or []:
         if not isinstance(prop, dict):
             continue
-        for key, val in prop.items():
-            if key != "__typename" and val is not None:
-                flat[key] = val
+        name = prop.get("name")
+        values = {
+            key: val
+            for key, val in prop.items()
+            if key not in ("__typename", "name") and val is not None
+        }
+        flat.update(values)
+        # Also file the value under the property's own name. A thermostat's
+        # three `Setpoint` entries all select `value`, and would otherwise
+        # overwrite each other; `targetSetpoint` / `lowerSetpoint` /
+        # `upperSetpoint` is the only thing that tells them apart.
+        if isinstance(name, str) and name and len(values) == 1:
+            flat[name] = next(iter(values.values()))
     return flat
 
 
@@ -348,10 +482,14 @@ def _unwrap(value: Any) -> Any:
     while isinstance(value, dict) and seen < 4:
         if "text" in value:
             return value["text"]
-        if "value" not in value:
-            return None
-        value = value["value"]
-        seen += 1
+        if "value" in value:
+            value = value["value"]
+            seen += 1
+            continue
+        # An action's state is ``{"status": "IDLE"}``; nothing else nests this way.
+        if "status" in value:
+            return value["status"]
+        return None
     return value
 
 
@@ -363,6 +501,26 @@ def _text(value: Any) -> str | None:
         return value
     unwrapped = _unwrap(value)
     return unwrapped if isinstance(unwrapped, str) else None
+
+
+def humanise(raw: str) -> str:
+    """``Robot.Clean`` -> ``Robot Clean``; ``targetSetpoint`` -> ``Target Setpoint``."""
+    words: list[str] = []
+    for part in raw.replace("_", ".").split("."):
+        words.extend(_CAMEL_BOUNDARY.sub(" ", part).split())
+    return " ".join(word[:1].upper() + word[1:] for word in words) or raw
+
+
+def _action_options(raw: Any) -> list[ActionOption]:
+    """Read ``supportedActions`` / ``supportedTargets`` into labelled options."""
+    options: list[ActionOption] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or item.get("id") in (None, ""):
+            continue
+        names = (_text(name) for name in item.get("friendlyNames") or [])
+        label = next((name for name in names if name), None) or str(item["id"])
+        options.append(ActionOption(id=str(item["id"]), friendly_name=label))
+    return options
 
 
 def _label(option: dict[str, Any]) -> str:

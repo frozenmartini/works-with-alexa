@@ -1,7 +1,10 @@
 """Switch entities for Works with Alexa.
 
-Every writable ``toggle`` feature becomes a switch -- the Window Fan's "Auto" is
-the worked example. Power is not a switch: it is the fan entity's own on/off, and
+Every writable, unclaimed ``toggle`` feature becomes a switch -- the Window
+Fan's "Auto", the Dreo fans' "Mute" and "Display Auto Off". Power becomes a
+switch only where no natural entity owns it: the Roborock's on/off starts and
+stops a clean, and its action features advertise no operations, so a switch is
+the whole of what can be driven. On a fan, power is the fan's own on/off, and
 exposing it twice would let the two disagree.
 """
 
@@ -15,14 +18,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
-from .const import CONTROLLABLE_CATEGORIES
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import WorksWithAlexaEntity
-from .models import Endpoint, Feature
+from .features import switch_features
+from .models import FEATURE_POWER, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
-
-FEATURE_TOGGLE = "toggle"
 
 
 async def async_setup_entry(
@@ -34,18 +35,15 @@ async def async_setup_entry(
 
     entities: list[WorksWithAlexaSwitch] = []
     for endpoint in coordinator.selected.values():
-        if endpoint.blocked or endpoint.display_category not in CONTROLLABLE_CATEGORIES:
-            continue
-        for feature in endpoint.features_named(FEATURE_TOGGLE):
-            if feature.writable:
-                entities.append(WorksWithAlexaSwitch(coordinator, endpoint, feature))
+        for feature in switch_features(endpoint):
+            entities.append(WorksWithAlexaSwitch(coordinator, endpoint, feature))
 
     _LOGGER.debug("Adding %d switches", len(entities))
     async_add_entities(entities)
 
 
 class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
-    """One writable toggle feature."""
+    """One writable toggle feature, or an endpoint's power."""
 
     def __init__(
         self,
@@ -54,7 +52,7 @@ class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
         feature: Feature,
     ) -> None:
         super().__init__(coordinator, endpoint, feature)
-        self._attr_name = feature.friendly_name or feature.key
+        self._attr_name = "Power" if feature.name == FEATURE_POWER else feature.label
 
     @property
     def is_on(self) -> bool | None:

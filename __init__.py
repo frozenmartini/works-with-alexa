@@ -34,6 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
     Platform.FAN,
+    Platform.LOCK,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,

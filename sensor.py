@@ -1,7 +1,9 @@
 """Read-only entities for Works with Alexa.
 
 A feature becomes a sensor when it reports a value and is either read-only or
-sits on a blocked endpoint. The second half is the Anthem rule: a Kohler valve
+sits on a blocked endpoint -- a temperature, the Window Fan's Air Temperature, a
+vacuum's action status (IDLE / RUNNING). Connectivity is the exception: every
+endpoint carries it, so it feeds the ``reachable`` attribute instead. The second half is the Anthem rule: a Kohler valve
 runs water, so every one of its features -- including the ones Alexa says are
 writable -- may only ever be read (see ``BLOCKED_MANUFACTURERS``). Writable
 features on unblocked endpoints are deliberately left alone here; they belong to
@@ -18,7 +20,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -75,7 +77,7 @@ class WorksWithAlexaSensor(CoordinatorEntity[WorksWithAlexaCoordinator], SensorE
         self._feature_key = feature.key
 
         self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}"
-        self._attr_name = feature.friendly_name or feature.key
+        self._attr_name = feature.label
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, endpoint.endpoint_id)},
             name=endpoint.friendly_name,
@@ -84,9 +86,14 @@ class WorksWithAlexaSensor(CoordinatorEntity[WorksWithAlexaCoordinator], SensorE
             serial_number=endpoint.serial_number,
         )
 
+        raw = feature.raw_value if isinstance(feature.raw_value, dict) else {}
         if unit := _SCALE_UNITS.get((feature.scale or "").upper()):
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = unit
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif raw.get("type") == "Percentage":
+            # An inventory level (a vacuum's filter or brush) measured in percent.
+            self._attr_native_unit_of_measurement = PERCENTAGE
             self._attr_state_class = SensorStateClass.MEASUREMENT
         elif isinstance(feature.value, (int, float)):
             # Numeric, but the device never said what the number means. Publish
@@ -124,6 +131,9 @@ class WorksWithAlexaSensor(CoordinatorEntity[WorksWithAlexaCoordinator], SensorE
         # unit is already on the entity itself.
         if feature.unit_of_measure and not feature.scale:
             attrs["reported_unit"] = feature.unit_of_measure
+        endpoint = self.coordinator.data.get(self._endpoint_id)
+        if endpoint is not None and endpoint.reachable is not None:
+            attrs["reachable"] = endpoint.reachable
         return attrs
 
     @callback

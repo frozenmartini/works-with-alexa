@@ -21,9 +21,20 @@ from typing import Any
 # for 73 endpoints, against ~22 s to poll them individually (ref/09). Asking for
 # `configuration` alongside `properties` means capability and state arrive
 # together, with no second round trip for bounds.
+#
+# `disablePagination` is the shape the sibling repo's tooling executes; without
+# it the server silently returns one page (ref/06, canonical document).
+#
+# `name` under `properties` is what tells three `Setpoint` entries on one
+# thermostat apart (target, lower, upper). The Lock, Reachability, InventoryLevel,
+# ActionState and ActionConfiguration fragments were taken from a schema
+# introspection on 2026-09-13, not guessed: an unknown fragment fails the whole
+# document. ActionConfiguration carries a vacuum's actions (Clean / Vacuum /
+# Mop, Dock / Empty), its request states (START / STOP / PAUSE / RESUME) and its
+# room targets.
 ENDPOINTS_QUERY = """
 query Endpoints {
-  endpoints {
+  endpoints(endpointsQueryParams: {paginationParams: {disablePagination: true}}) {
     items {
       id
       friendlyName
@@ -37,6 +48,7 @@ query Endpoints {
         operations { name }
         properties {
           __typename
+          name
           ... on Power { powerStateValue }
           ... on ToggleState { toggleStateValue }
           ... on Mode { modeValue { value } }
@@ -44,6 +56,10 @@ query Endpoints {
           ... on TemperatureSensor { value { value scale } }
           ... on Setpoint { value { value scale } }
           ... on ThermostatMode { thermostatModeValue }
+          ... on Lock { lockState }
+          ... on Reachability { reachabilityStatusValue }
+          ... on InventoryLevel { inventoryLevelValue { type value unit } }
+          ... on ActionState { actionStateValue { status actionId targetIds } }
         }
         configuration {
           __typename
@@ -60,6 +76,14 @@ query Endpoints {
           }
           ... on ToggleConfiguration { friendlyName { value { text } } }
           ... on ThermostatConfiguration { supportedModes }
+          ... on InventoryConfiguration { measurement { level { type unit } } }
+          ... on ActionConfiguration {
+            action {
+              supportedStates
+              supportedActions { id friendlyNames { value { text } } }
+            }
+            target { supportedTargets { id friendlyNames { value { text } } } }
+          }
         }
       }
     }

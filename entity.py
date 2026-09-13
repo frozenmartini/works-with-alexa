@@ -90,6 +90,21 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
     def available(self) -> bool:
         return super().available and self.feature is not None
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Amazon's reachability flag, as information rather than availability.
+
+        ``connectivity`` is the signal behind the Alexa app's "device is
+        unresponsive", but on 2026-09-13 both Dreo fans reported UNREACHABLE
+        while also reporting live-looking state. Until that is understood, a
+        wrong "unavailable" would block control, whereas a wrong "available"
+        only produces a failed command with a clear error.
+        """
+        endpoint = self.endpoint
+        if endpoint is None or endpoint.reachable is None:
+            return None
+        return {"reachable": endpoint.reachable}
+
     def feature_value(self, key: str | None) -> Any:
         """Value of one feature, preferring an unconfirmed local write.
 

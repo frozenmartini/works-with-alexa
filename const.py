@@ -110,16 +110,28 @@ MIN_SCAN_INTERVAL: Final = 15
 BLOCKED_MANUFACTURERS: Final = frozenset({"kohler"})
 
 # Writable entities are only created for endpoints in these display categories.
-# The account exposes 73 endpoints using the same range/mode/toggle mechanism,
-# including an INTERIOR_BLIND that is explicitly not a target of this
-# integration (ref/03, ref/06) -- a generic control platform would silently
-# start driving it. Read-only sensors are not gated this way; reading anything
-# is harmless.
-CONTROLLABLE_CATEGORIES: Final = frozenset({"FAN"})
+# Every endpoint on the account -- Echo speakers, phone apps, Fire TV
+# applications -- arrives through the same power/mode/range/toggle mechanism, so
+# an ungated control platform would start driving things nobody asked for (the
+# Silk Browser carries a `mode`). The set is the device classes the owner asked
+# to expose raw on 2026-09-13: fans, blinds, locks, thermostats and vacuums.
+# Read-only sensors are not gated this way; reading anything is harmless.
+CONTROLLABLE_CATEGORIES: Final = frozenset(
+    {
+        "FAN",
+        "INTERIOR_BLIND",
+        "EXTERIOR_BLIND",
+        "SMARTLOCK",
+        "THERMOSTAT",
+        "VACUUM_CLEANER",
+    }
+)
 
 # Mode features are addressed by instance but classified by friendlyName: the
 # Window Fan's instances are bare integers whose numbering means nothing, and
-# only the label says which one is speed (ref/07).
+# only the label says which one is speed (ref/07). Only an ORDERED mode with
+# this label becomes the fan's percentage; a numeric speed range (the Dreo fans,
+# 0..6 and 0..12) stays a raw number by the owner's 2026-09-13 steer.
 FAN_SPEED_LABELS: Final = ("fan speed", "speed")
 
 # The Window Fan exposes no oscillate capability of its own. By user directive
