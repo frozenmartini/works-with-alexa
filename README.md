@@ -83,12 +83,11 @@ No Python requirements beyond Home Assistant itself.
 
 ## Development
 
-Pure logic (parsing, classification, protocol handling, TOTP) has no Home Assistant imports and
-tests with the standard library alone:
+Pure logic (parsing, classification, protocol handling, TOTP) carries no Home Assistant
+imports, so it is testable with the standard library alone.
 
-```
-python3 -m unittest discover -s tests -t .
-```
+`features.py` is the single place the feature-to-entity rules live. Change the rules there and
+not at a call site — the platforms, the device picker and the tests all read it.
 
-`features.py` is the single place the feature-to-entity rules live; `tests/test_features.py`
-pins what each real device yields, against fixtures captured from a live account.
+The test suite is maintained alongside this repository rather than inside it, and runs against
+fixtures captured from a live account. It is not distributed with the integration.
