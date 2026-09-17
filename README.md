@@ -27,11 +27,11 @@ Two layers, chosen separately on the device page of the integration's options:
 | `lock` | `lock` | Locked / unlocked / jammed |
 | anything read-only with a value | `sensor` | Temperatures carry °F/°C; a vacuum's action status reads IDLE / RUNNING |
 
-**Built devices.** Assembled entities, kept apart from the raw ones. Today that is a `fan`
-built from power, an ordered speed mode as percentage, and a direction mode as oscillate.
-Only fans are offered; by default only fans with an ordered speed mode are built.
+Nothing is assembled here: whole devices (a fan from a power switch, a speed select and a
+direction select, say) are built from these entities by the companion Kitbash integration.
+The built Window Fan `fan` entity that earlier versions carried was removed on 2026-09-13.
 
-A device may be in both lists. Only devices that would yield at least one entity are offered;
+Only devices that would yield at least one entity are offered;
 phones, apps, Echo speakers and scene triggers are filtered out.
 
 Every entity carries a `reachable` attribute (Alexa's own connectivity flag). While a device

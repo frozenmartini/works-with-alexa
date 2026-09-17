@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AmazonAlexaSession
@@ -33,7 +33,6 @@ from .protocol import AuthError, WorksWithAlexaError
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
-    Platform.FAN,
     Platform.LOCK,
     Platform.NUMBER,
     Platform.SELECT,
@@ -79,6 +78,7 @@ async def async_setup_entry(
 
     entry.runtime_data = coordinator
     _purge_deselected(hass, entry, coordinator)
+    _purge_built_fan(hass, entry)
     # The device selection and the polling interval are both read at setup, so
     # changing either from the options flow needs the entry to come back up.
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -106,8 +106,7 @@ def _purge_deselected(
         return
 
     registry = dr.async_get(hass)
-    # Raw and built are separate lists; a device in either stays.
-    keep = set(coordinator.selected) | set(coordinator.built)
+    keep = set(coordinator.selected)
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
         ours = {
             identifier
@@ -139,7 +138,22 @@ async def async_remove_config_entry_device(
     ours = {
         identifier for domain, identifier in device.identifiers if domain == DOMAIN
     }
-    return not (ours & (set(coordinator.selected) | set(coordinator.built)))
+    return not (ours & set(coordinator.selected))
+
+
+@callback
+def _purge_built_fan(hass: HomeAssistant, entry: WorksWithAlexaConfigEntry) -> None:
+    """Forget the entities of the removed fan platform.
+
+    The built Window Fan (``fan.window_fan``) was dropped on 2026-09-13; the
+    owner assembles fans in kitbash from the raw entities instead. Without
+    this the registry keeps the old entity as a restored, unavailable shell.
+    """
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.domain == "fan":
+            _LOGGER.info("Removing the retired built fan entity %s", entity.entity_id)
+            registry.async_remove(entity.entity_id)
 
 
 async def _async_options_updated(

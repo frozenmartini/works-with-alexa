@@ -144,8 +144,7 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        feature = self.feature
-        value = feature.property_value(self._prop) if feature is not None else None
+        value = self.feature_property(self._prop)
         if value is None:
             return None
         try:
@@ -159,4 +158,6 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
         feature = self.feature
         if pair and feature is not None and (current := feature.property_value(pair)) is not None:
             payload[pair] = {"value": float(current), "scale": self._scale}
-        await self.async_control(SET_TARGET_SETPOINT, payload)
+        await self.async_control(
+            SET_TARGET_SETPOINT, payload, assume=value, assume_property=self._prop
+        )

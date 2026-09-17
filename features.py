@@ -4,10 +4,10 @@ One place for every classification rule, shared by the platforms, the pickers
 and the tests, so what a picker promises and what the platforms build cannot
 drift apart. No Home Assistant imports, so it runs anywhere :mod:`.models` does.
 
-Two layers, kept apart by owner request (2026-09-13):
-
-**Raw** -- one Home Assistant entity per Alexa feature, nothing absorbed, using
-the plainest primitive that carries it:
+One layer, raw (owner request, 2026-09-13; the built Window Fan ``fan`` entity
+that used to sit beside it moved to kitbash the same day): one Home Assistant
+entity per Alexa feature, nothing absorbed, using the plainest primitive that
+carries it:
 
 * ``power`` and ``toggle`` -> switch;
 * ``mode`` -> select, with the device's own labels;
@@ -17,23 +17,13 @@ the plainest primitive that carries it:
 * ``lock`` -> lock (a lock/unlock pair has no plainer primitive);
 * anything read-only with a value -> sensor.
 
-Chosen through the device picker. The owner's second integration assembles
-these into HA- and HomeKit-shaped devices, so raw and complete beats clever.
-
-**Built** -- assembled entities, chosen through their own option. Today one
-kind: the fan (power, plus an ORDERED speed mode as percentage and a Direction
-mode as oscillate, both by earlier user directive, ref/07). With no choice
-recorded, the fans with an ordered speed mode are built, which is the Window
-Fan exactly as it has always been.
-
-A device may be raw, built, or both. The layers never collide: raw entities
-carry the feature key in their unique id on the switch/select/number/sensor
-platforms, the fan carries the power key on the fan platform.
+Chosen through the device picker. The owner's second integration (kitbash)
+assembles these into HA- and HomeKit-shaped devices, so raw and complete beats
+clever. Raw entities carry the feature key in their unique id.
 """
 
 from __future__ import annotations
 
-from .const import FAN_SPEED_LABELS, OSCILLATE_OFF_LABEL, OSCILLATE_ON_LABEL
 from .models import (
     FEATURE_LOCK,
     FEATURE_MODE,
@@ -48,8 +38,6 @@ from .models import (
     sensor_features,
 )
 
-FAN_CATEGORY = "FAN"
-
 # The setpoints a thermostat may report, in the order they are exposed. Which of
 # them a device actually carries is read per poll: the ecobee reports all three,
 # the Anthem only the target (2026-09-13 capture, ref/08).
@@ -59,72 +47,9 @@ SET_THERMOSTAT_MODE = "setThermostatMode"
 SET_TARGET_SETPOINT = "setTargetSetpoint"
 
 
-def _label(feature: Feature) -> str:
-    return (feature.friendly_name or "").strip().lower()
-
-
 def _writable_power(endpoint: Endpoint) -> Feature | None:
     power = endpoint.feature(FEATURE_POWER)
     return power if power is not None and power.writable else None
-
-
-# --- built: the fan -------------------------------------------------------------
-def is_fan(endpoint: Endpoint) -> bool:
-    """A controllable FAN with writable power: a candidate for the built fan."""
-    return (
-        is_controllable(endpoint)
-        and endpoint.display_category == FAN_CATEGORY
-        and _writable_power(endpoint) is not None
-    )
-
-
-def speed_feature(endpoint: Endpoint) -> Feature | None:
-    """The ORDERED mode labelled as speed, if the fan has one (Low..Turbo).
-
-    Only an ordered mode may become a percentage; an unordered one is a plain
-    choice. A numeric speed range is not folded into the fan either.
-    """
-    for feature in endpoint.features_named(FEATURE_MODE):
-        if feature.ordered and feature.writable and _label(feature) in FAN_SPEED_LABELS:
-            return feature
-    return None
-
-
-def direction_feature(endpoint: Endpoint) -> tuple[Feature, str, str] | None:
-    """A mode standing in for oscillation, with its on and off option values.
-
-    The Window Fan's Direction: Exhaust oscillates, Direct does not (user
-    directive, ref/07).
-    """
-    for feature in endpoint.features_named(FEATURE_MODE):
-        if not feature.writable:
-            continue
-        values = {
-            option.friendly_name.strip().lower(): option.value
-            for option in feature.mode_options
-        }
-        on_value = values.get(OSCILLATE_ON_LABEL)
-        off_value = values.get(OSCILLATE_OFF_LABEL)
-        if on_value is not None and off_value is not None:
-            return feature, on_value, off_value
-    return None
-
-
-def default_built(endpoint: Endpoint) -> bool:
-    """Built when no choice is recorded: fans with an ordered speed mode.
-
-    That is the Window Fan, and only the Window Fan, on the live account -- so
-    an entry saved before the option existed keeps ``fan.window_fan`` and gains
-    nothing else.
-    """
-    return is_fan(endpoint) and speed_feature(endpoint) is not None
-
-
-def built_plan(endpoint: Endpoint) -> dict[str, list[str]]:
-    """Platform -> entity names the built layer yields, if the device is built."""
-    if is_fan(endpoint):
-        return {"fan": [endpoint.friendly_name.strip()]}
-    return {}
 
 
 # --- raw: lock ------------------------------------------------------------------

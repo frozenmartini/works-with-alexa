@@ -97,10 +97,8 @@ HASS_URL_CHECK_TIMEOUT: Final = 10
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 # The raw layer: endpoints exposed one entity per feature. Absent means all.
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
-# The built layer, kept apart from the raw one by owner request (2026-09-13):
-# endpoints that also get an assembled entity -- today a fan. Absent means the
-# fans with an ordered speed mode, which is the Window Fan as it has always been.
-CONF_BUILT_ENDPOINTS: Final = "built_endpoints"
+# "built_endpoints" was the built layer's option until 2026-09-13, when the
+# assembled Window Fan moved to kitbash; entries may still carry it, ignored.
 CONF_EXCLUDE_ENDPOINTS: Final = "exclude_endpoints"
 CONF_READ_ONLY_ENDPOINTS: Final = "read_only_endpoints"
 
@@ -132,19 +130,6 @@ CONTROLLABLE_CATEGORIES: Final = frozenset(
     }
 )
 
-# Mode features are addressed by instance but classified by friendlyName: the
-# Window Fan's instances are bare integers whose numbering means nothing, and
-# only the label says which one is speed (ref/07). Only an ORDERED mode with
-# this label becomes the fan's percentage; a numeric speed range (the Dreo fans,
-# 0..6 and 0..12) stays a raw number by the owner's 2026-09-13 steer.
-FAN_SPEED_LABELS: Final = ("fan speed", "speed")
-
-# The Window Fan exposes no oscillate capability of its own. By user directive
-# its Direction mode is presented as Home Assistant's oscillate control:
-# Exhaust oscillates, Direct does not. Matched on the option labels rather than
-# the instance number, for the same reason as the speed lookup.
-OSCILLATE_ON_LABEL: Final = "exhaust"
-OSCILLATE_OFF_LABEL: Final = "direct"
 
 # Token refresh happens this many seconds before the access token actually expires.
 TOKEN_EXPIRY_MARGIN: Final = 300

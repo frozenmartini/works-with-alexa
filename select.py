@@ -114,7 +114,7 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
         feature = self.feature
         if feature is None:
             return None
-        mode = feature.property_value(THERMOSTAT_MODE_PROPERTY)
+        mode = self.feature_property(THERMOSTAT_MODE_PROPERTY)
         if mode is None:
             mode = feature.property_value("thermostatModeValue")
         if mode is None:
@@ -124,7 +124,10 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         try:
             await self.async_control(
-                SET_THERMOSTAT_MODE, {THERMOSTAT_MODE_PROPERTY: {"value": option}}
+                SET_THERMOSTAT_MODE,
+                {THERMOSTAT_MODE_PROPERTY: {"value": option}},
+                assume=option,
+                assume_property=THERMOSTAT_MODE_PROPERTY,
             )
         except HomeAssistantError as first_error:
             _LOGGER.debug(
@@ -132,6 +135,11 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
                 first_error,
             )
             try:
-                await self.async_control(SET_THERMOSTAT_MODE, {THERMOSTAT_MODE_PROPERTY: option})
+                await self.async_control(
+                    SET_THERMOSTAT_MODE,
+                    {THERMOSTAT_MODE_PROPERTY: option},
+                    assume=option,
+                    assume_property=THERMOSTAT_MODE_PROPERTY,
+                )
             except HomeAssistantError:
                 raise first_error from None
