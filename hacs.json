@@ -1,0 +1,5 @@
+{
+  "name": "Works with Alexa",
+  "render_readme": true,
+  "homeassistant": "2024.6.0"
+}

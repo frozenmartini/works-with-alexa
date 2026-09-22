@@ -1,0 +1,79 @@
+name: Draft release
+
+# Fills in a release's notes so nobody has to paste them from a phone.
+#
+# Pushing a v* tag creates a DRAFT release whose description is docs/releases/<tag>.md.
+# Draft on purpose: publishing is the moment HACS tells every installation an update exists,
+# and that stays a decision rather than a side effect of pushing a tag. This only does the
+# typing.
+#
+# Why the release body and not the tag message: HACS builds Home Assistant's update-dialog
+# notes from the release body (hacs/update.py, async_release_notes) and never reads a tag
+# annotation, so a release with an empty body shows users nothing. A tag message is also fixed
+# at creation - correcting one means deleting and re-pushing a tag that a release points at.
+#
+# Why `gh` rather than a release action: it is preinstalled on GitHub's runners and already
+# authenticated by the automatic token, so there is no third-party action to pin, review or
+# keep updated for fifteen lines of work.
+#
+# ⚠️ Write the notes file and commit it BEFORE cutting the tag, so it rides in the tag's own
+# tree. Doing it the other way round still works - the run falls back to the default branch -
+# but the tag then describes a commit that does not contain its own release notes.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to draft a release for (for example v0.2.8)"
+        required: true
+
+permissions: {}
+
+jobs:
+  draft:
+    name: Draft release
+    runs-on: ubuntu-latest
+    permissions:
+      # The only elevated permission here, and it is what creates or edits the release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Draft the release from its notes file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          NOTES="docs/releases/${TAG}.md"
+
+          if [ ! -f "$NOTES" ]; then
+            # Written after the tag was cut. Take them from the default branch rather than
+            # failing: re-pushing a tag is the one git operation worth going out of the way
+            # to avoid here.
+            echo "::warning::$NOTES is not in ${TAG}'s tree; falling back to ${DEFAULT_BRANCH}."
+            mkdir -p "$(dirname "$NOTES")"
+            git fetch --depth=1 origin "$DEFAULT_BRANCH"
+            git show "FETCH_HEAD:${NOTES}" > "$NOTES" || {
+              echo "::error::No release notes found at ${NOTES}, on the tag or on ${DEFAULT_BRANCH}."
+              exit 1
+            }
+          fi
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "$TAG" --notes-file "$NOTES"
+            echo "::notice::Drafted $TAG. Publish it from the Releases page when ready."
+          elif [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh release edit "$TAG" --notes-file "$NOTES"
+            echo "::notice::Updated the existing draft for $TAG."
+          else
+            # Never overwrite notes on a release people can already see - they may have been
+            # edited by hand after publishing.
+            echo "::notice::$TAG is already published; leaving its notes alone."
+          fi

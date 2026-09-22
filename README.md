@@ -14,9 +14,7 @@ whole devices is left to you, or to its companion integration, `kitbash`.
 
 ## What you get
 
-Two layers, chosen separately on the device page of the integration's options:
-
-**Raw devices.** One entity per Alexa feature, nothing assembled:
+One entity per Alexa feature, for the devices you pick on the integration's options page:
 
 | Alexa feature | Home Assistant entity | Notes |
 |---|---|---|
@@ -75,11 +73,17 @@ never deleted on an error.
 
 ## Install
 
-1. Copy this folder to `<config>/custom_components/works_with_alexa/`.
-2. Restart Home Assistant Core.
-3. Settings → Devices & services → Add integration → **Works with Alexa**.
+**HACS** — Integrations → ⋮ → Custom repositories, add this repository as an *Integration*,
+then download **Works with Alexa** and restart Home Assistant. (Once this repository is in the
+HACS default store, it is searchable there directly and no custom repository is needed.)
 
-No Python requirements beyond Home Assistant itself.
+**Manually** — copy `custom_components/works_with_alexa/` into `<config>/custom_components/`
+and restart Home Assistant.
+
+Either way, finish in Settings → Devices & services → Add integration → **Works with Alexa**.
+
+Requires Home Assistant **2024.6.0** or newer. No Python requirements beyond Home Assistant
+itself.
 
 ## Development
 
