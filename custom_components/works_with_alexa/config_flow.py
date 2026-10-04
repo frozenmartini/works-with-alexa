@@ -22,6 +22,7 @@ import datetime
 import json
 import logging
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
 import voluptuous as vol
@@ -51,6 +52,8 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.storage import Store
 
 from .auth_proxy import LoginRelay
+from .enrollment import DirectEnrollment, InvalidRedirect
+from .dev_logging import async_enable_evidence_logging, event
 from .const import (
     ALEXA_MEDIA_DOMAIN,
     ALEXA_MEDIA_OAUTH,
@@ -64,6 +67,7 @@ from .const import (
     CONF_DIRECTED_ID,
     CONF_HASS_URL,
     CONF_INCLUDE_ENDPOINTS,
+    CONF_INCLUDE_SCENES,
     CONF_MAC_DMS,
     CONF_OTP_SECRET,
     CONF_PROXY_WARNING,
@@ -80,7 +84,8 @@ from .const import (
     SUPPORTED_DOMAINS,
 )
 from .fingerprint import alexa_media_device_serial
-from .models import produces_entities
+from .models import produces_entities, is_controllable
+from .scenes import scene_choices
 from .protocol import AuthError, WorksWithAlexaError
 from .totp import InvalidSecret, normalize_secret, seconds_remaining, totp_code
 
@@ -90,9 +95,8 @@ _LOGGER = logging.getLogger(__name__)
 def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
     """Endpoint id -> label, for the device picker.
 
-    Sorted by the name the user sees, since the ids are opaque. A blocked
-    endpoint is marked rather than hidden: it is still worth importing for its
-    readings, and the label is the only place to say it will never be written to.
+    Sorted by the name the user sees, since the ids are opaque. Endpoints
+    yielding only sensors are marked read-only; capability rules decide this.
     """
     labelled: list[tuple[str, str, str]] = []
     seen: dict[str, int] = {}
@@ -100,7 +104,7 @@ def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
         # Most of an Alexa account is not devices -- Echo speakers, phone apps,
         # scene triggers. Offering an endpoint that yields nothing would be an
         # invitation to tick it and get an empty device.
-        if not produces_entities(endpoint):
+        if endpoint.display_category == "SCENE_TRIGGER" or not produces_entities(endpoint):
             continue
         # Sort on the stripped name: some names on a real account carry leading
         # whitespace, which would otherwise sort them ahead of everything.
@@ -108,7 +112,7 @@ def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
         label = name
         if endpoint.manufacturer:
             label = f"{label} ({endpoint.manufacturer})"
-        if endpoint.blocked:
+        if not is_controllable(endpoint):
             label = f"{label} - read-only"
         # Names are not unique on an Alexa account. Two identical rows of
         # checkboxes are unpickable, so disambiguate the repeats.
@@ -184,12 +188,17 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._credentials: dict[str, Any] = {}
         self._email: str | None = None
         self._choices: dict[str, str] = {}
+        self._scene_choices: dict[str, str] = {}
         # Which sign-in form started the relay, so a failure returns to it.
         self._login_step: str = "login"
         # What the relay types into Amazon's pages on the alexa_media_player-
         # style path. Flow memory only: never written to the entry or logged.
         self._autofill: dict[str, str] | None = None
         self._hass_url_error: str | None = None
+        self._direct_enrollment: DirectEnrollment | None = None
+        self._direct_credentials: dict[str, Any] | None = None
+        self._direct_experiment_id: str | None = None
+        self._direct_experiment_name = "Browser sign-in"
 
     # --- entry point --------------------------------------------------------
 
@@ -197,25 +206,108 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Offer adoption of existing credentials, or a fresh Amazon sign-in."""
+        await async_enable_evidence_logging(self.hass)
+        event(_LOGGER, "config.started")
         return self.async_show_menu(step_id="user", menu_options=self._menu_options())
 
     def _menu_options(self) -> list[str]:
-        """The ways in, working ones first; shared by setup and reauth.
-
-        ``login`` is listed last and labelled as unfinished: Amazon serves a
-        proof-of-work CVF challenge whose widget loads from a CDN host the relay
-        cannot proxy, so a fresh registration through a blank sign-in has not
-        completed (threads/002 Q9, Q12). ``login_password`` is the same
-        registration driven the way alexa_media_player drives it -- credentials
-        and the 2SV code filled in for the user -- offered because that flow
-        does complete for that integration.
-        """
-        options = ["import_token", "login_password", "login"]
+        """Shared setup/reauth menu, including an isolated direct-login trial."""
+        options = ["import_token", "login_direct", "login_password", "login"]
         if self._alexa_media_accounts():
             # Only worth offering when there is actually something to borrow --
             # and it is the path that works, so it leads.
             options.insert(0, "import_alexa_media")
         return options
+
+    async def async_step_login_direct(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the marketplace before opening Amazon directly in a browser."""
+        if user_input is not None:
+            self._config[CONF_URL] = user_input[CONF_URL]
+            self._direct_credentials = None
+            self._direct_experiment_id = uuid4().hex
+            self._direct_experiment_name = (
+                user_input.get("experiment_name", "Browser sign-in").strip()[:80]
+                or "Browser sign-in"
+            )
+            self._direct_enrollment = DirectEnrollment(user_input[CONF_URL])
+            return await self.async_step_direct_redirect()
+        return self.async_show_form(
+            step_id="login_direct",
+            data_schema=vol.Schema({
+                vol.Required(CONF_URL, default=self._config.get(CONF_URL, DEFAULT_DOMAIN)):
+                    vol.In(SUPPORTED_DOMAINS),
+                vol.Optional("experiment_name", default="Browser sign-in"): str,
+            }),
+        )
+
+    async def async_step_direct_redirect(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Save experimental credentials separately, without changing any entry."""
+        enrollment = self._direct_enrollment
+        if enrollment is None:
+            return await self.async_step_login_direct()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input.get("restart_login"):
+                self._direct_enrollment = None
+                self._direct_credentials = None
+                return await self.async_step_login_direct()
+            try:
+                if self._direct_credentials is None:
+                    code = enrollment.authorization_code(user_input.get("redirect_url", ""))
+                    # An isolated client avoids sending another account's cookies.
+                    async with aiohttp.ClientSession(
+                        cookie_jar=aiohttp.DummyCookieJar(),
+                        timeout=aiohttp.ClientTimeout(total=60),
+                        headers={"User-Agent": (
+                            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148"
+                        )},
+                    ) as session:
+                        self._direct_credentials = await enrollment.async_register(session, code)
+                # This experiment never reaches _async_session or _async_finalize:
+                # neither the live cookie jar nor the main entry is touched.
+                # Retain issued credentials on a storage failure so retrying does
+                # not spend the single-use authorization code a second time.
+                await Store(
+                    self.hass, 1,
+                    f"{DOMAIN}_direct_experiment_{self._direct_experiment_id}",
+                    private=True,
+                ).async_save({
+                    **self._direct_credentials,
+                    CONF_URL: enrollment.domain,
+                    "experiment_name": self._direct_experiment_name,
+                    "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                })
+            except InvalidRedirect:
+                errors["redirect_url"] = "invalid_redirect"
+            except AuthError:
+                errors["base"] = "direct_login_failed"
+            except (WorksWithAlexaError, aiohttp.ClientError, TimeoutError):
+                errors["base"] = "cannot_connect"
+            except OSError:
+                errors["base"] = "experiment_save_failed"
+            else:
+                self._direct_enrollment = None
+                self._direct_credentials = None
+                return self.async_abort(
+                    reason="experiment_saved",
+                    description_placeholders={"experiment_id": self._direct_experiment_id},
+                )
+        return self.async_show_form(
+            step_id="direct_redirect",
+            data_schema=vol.Schema({
+                vol.Optional("redirect_url"): TextSelector(TextSelectorConfig(
+                    type=TextSelectorType.TEXT, multiline=True,
+                )),
+                vol.Optional("restart_login", default=False): bool,
+            }),
+            description_placeholders={"login_url": enrollment.login_url},
+            errors=errors,
+        )
 
     def _default_hass_url(self) -> str:
         """This instance's own URL, for the browser to reach the relay on."""
@@ -734,7 +826,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._choices = endpoint_choices(endpoints)
         if not self._choices:
-            return self._create_entry()
+            return await self.async_step_scenes()
 
         return self.async_show_menu(
             step_id="select_devices",
@@ -748,7 +840,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         """Tick the devices to expose raw, starting from none."""
         if user_input is not None:
             self._config[CONF_INCLUDE_ENDPOINTS] = user_input[CONF_INCLUDE_ENDPOINTS]
-            return self._create_entry()
+            return await self.async_step_scenes()
 
         schema: dict[Any, Any] = {
             # Starts empty: opting in beats opting out when the account
@@ -769,14 +861,31 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Bring in every device the account offers."""
         self._config[CONF_INCLUDE_ENDPOINTS] = list(self._choices)
-        return self._create_entry()
+        return await self.async_step_scenes()
 
     async def async_step_devices_none(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Set the account up with no devices; add them later from options."""
         self._config[CONF_INCLUDE_ENDPOINTS] = []
-        return self._create_entry()
+        return await self.async_step_scenes()
+
+    async def async_step_scenes(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose scenes independently; every scene starts unselected."""
+        if user_input is not None:
+            self._config[CONF_INCLUDE_SCENES] = user_input.get(CONF_INCLUDE_SCENES, [])
+            return self._create_entry()
+        if not self._scene_choices:
+            return self._create_entry()
+        return self.async_show_form(
+            step_id="scenes",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_INCLUDE_SCENES, default=list): cv.multi_select(self._scene_choices),
+            }),
+            description_placeholders={"count": str(len(self._scene_choices))},
+        )
 
     def _create_entry(self) -> ConfigFlowResult:
         """Write the entry from what the flow has gathered."""
@@ -802,6 +911,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # falls back to. An empty list means the user deliberately chose none.
         if CONF_INCLUDE_ENDPOINTS in self._config:
             options[CONF_INCLUDE_ENDPOINTS] = self._config[CONF_INCLUDE_ENDPOINTS]
+
+        options[CONF_INCLUDE_SCENES] = self._config.get(CONF_INCLUDE_SCENES, [])
 
         title = f"Works with Alexa ({email})" if email else "Works with Alexa"
         return self.async_create_entry(title=title, data=data, options=options)
@@ -834,7 +945,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_endpoints(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """Every endpoint on the account, for the device picker."""
         session = await self._async_session(credentials)
-        return await session.async_get_endpoints()
+        endpoints = await session.async_get_endpoints()
+        try:
+            self._scene_choices = scene_choices(await session.async_get_scenes())
+        except WorksWithAlexaError:
+            _LOGGER.warning("Could not list Alexa scenes for setup")
+            self._scene_choices = {}
+        return endpoints
 
     async def _async_identify(self, credentials: dict[str, Any]) -> str | None:
         """Best-effort account email for the login path.
@@ -881,10 +998,9 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Offer the same ways in as first-time setup.
 
-        Every path ends in :meth:`_async_finalize`, which under reauth updates
-        the existing entry instead of creating one. Going straight to the blank
-        sign-in, as this once did, made reauth depend on the one path that has
-        not completed.
+        Connection paths end in :meth:`_async_finalize`, which under reauth
+        updates the existing entry instead of creating one. The direct-login
+        experiment saves separately and leaves this entry unchanged.
         """
         # Prefill from the entry: its stored hass_url and scan interval. An
         # entry created by an import path never collected a hass_url, so fall
@@ -912,33 +1028,44 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
 
     def __init__(self) -> None:
         self._scan_interval: int = DEFAULT_SCAN_INTERVAL
+        self._pending_include: list[str] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Polling interval, then the same all/none/pick buttons as setup."""
+        """Expose device and scene management immediately after setup."""
+        self._scan_interval = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        if user_input is not None:
+            return await self.async_step_polling(user_input)
+        event(_LOGGER, "options.opened", entry_id=self.config_entry.entry_id)
+        return self.async_show_menu(
+            step_id="init", menu_options=["devices", "scenes", "polling"],
+        )
+
+    async def async_step_polling(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         if user_input is not None:
             self._scan_interval = user_input[CONF_SCAN_INTERVAL]
-            if not self._endpoint_choices():
-                # Entry not loaded, so there is no device list to offer. Saving
-                # the interval alone must not wipe the stored selection.
-                return self._save()
-            return await self.async_step_devices()
-
-        current = self.config_entry.options
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_SCAN_INTERVAL,
-                    default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
+            return self._save()
+        return self.async_show_form(
+            step_id="polling",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SCAN_INTERVAL, default=self._scan_interval):
+                    vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
+            }),
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
 
     async def async_step_devices(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        if coordinator is None:
+            return self.async_show_form(
+                step_id="devices", data_schema=vol.Schema({}),
+                errors={"base": "entry_unavailable"}, description_placeholders={"count": "0"},
+            )
+        await coordinator.async_request_refresh()
         choices = self._endpoint_choices()
         return self.async_show_menu(
             step_id="devices",
@@ -955,7 +1082,7 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Save the interval without touching the device selection."""
-        return self._save()
+        return await self._async_choose_scenes()
 
     async def async_step_devices_pick(
         self, user_input: dict[str, Any] | None = None
@@ -963,7 +1090,7 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         """Edit the selection, starting from what is currently in use."""
         choices = self._endpoint_choices()
         if user_input is not None:
-            return self._save(user_input[CONF_INCLUDE_ENDPOINTS])
+            return await self._async_choose_scenes(user_input[CONF_INCLUDE_ENDPOINTS])
 
         selected = self.config_entry.options.get(CONF_INCLUDE_ENDPOINTS)
         if selected is None:
@@ -996,15 +1123,51 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Every device."""
-        return self._save(list(self._endpoint_choices()))
+        return await self._async_choose_scenes(list(self._endpoint_choices()))
 
     async def async_step_devices_none(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """No devices at all."""
-        return self._save([])
+        return await self._async_choose_scenes([])
 
-    def _save(self, include: list[str] | None = None) -> ConfigFlowResult:
+    async def _async_choose_scenes(self, include: list[str] | None = None) -> ConfigFlowResult:
+        self._pending_include = include
+        return await self.async_step_scenes()
+
+    async def async_step_scenes(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Separate scene selection; missing options mean all off."""
+        if self._pending_include is None and (user_input is None or CONF_INCLUDE_SCENES not in user_input):
+            coordinator = getattr(self.config_entry, "runtime_data", None)
+            if coordinator is not None:
+                await coordinator.async_request_refresh()
+            if coordinator is None or not coordinator.scenes_available:
+                return self.async_show_form(
+                    step_id="scenes", data_schema=vol.Schema({}),
+                    errors={"base": "entry_unavailable"}, description_placeholders={"count": "0"},
+                )
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        if coordinator is None or not coordinator.scenes_available:
+            # Keep stored choices during an outage or while the entry is unloaded.
+            return self._save(self._pending_include)
+        choices = scene_choices(coordinator.scenes)
+        if user_input is not None:
+            return self._save(self._pending_include, user_input.get(CONF_INCLUDE_SCENES, []))
+        if not choices:
+            return self._save(self._pending_include)
+        selected = self.config_entry.options.get(CONF_INCLUDE_SCENES, [])
+        return self.async_show_form(
+            step_id="scenes",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_INCLUDE_SCENES, default=[key for key in choices if key in selected]):
+                    cv.multi_select(choices),
+            }),
+            description_placeholders={"count": str(len(choices))},
+        )
+
+    def _save(self, include: list[str] | None = None, scenes: list[str] | None = None) -> ConfigFlowResult:
         """Write options, keeping whatever this pass did not touch."""
         options: dict[str, Any] = {
             **self.config_entry.options,
@@ -1012,6 +1175,12 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
         }
         if include is not None:
             options[CONF_INCLUDE_ENDPOINTS] = include
+        if scenes is not None:
+            options[CONF_INCLUDE_SCENES] = scenes
+        event(_LOGGER, "options.saved", entry_id=self.config_entry.entry_id,
+              selected_devices=len(options.get(CONF_INCLUDE_ENDPOINTS, [])),
+              selected_scenes=len(options.get(CONF_INCLUDE_SCENES, [])),
+              scan_interval=self._scan_interval)
         return self.async_create_entry(data=options)
 
     def _endpoints(self) -> dict[str, Any]:

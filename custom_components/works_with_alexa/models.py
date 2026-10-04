@@ -18,8 +18,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .const import BLOCKED_MANUFACTURERS, CONTROLLABLE_CATEGORIES
-
 # Feature names we know how to interpret.
 FEATURE_POWER = "power"
 FEATURE_MODE = "mode"
@@ -316,14 +314,6 @@ class Endpoint:
         return str(power.value).upper() == "ON"
 
     @property
-    def blocked(self) -> bool:
-        """Whether this endpoint may never be written to.
-
-        Standing user directive: the Kohler Anthem runs water.
-        """
-        return (self.manufacturer or "").strip().lower() in BLOCKED_MANUFACTURERS
-
-    @property
     def reachable(self) -> bool | None:
         """Amazon's own reachability flag, or ``None`` when it is not reported.
 
@@ -362,9 +352,8 @@ def sensor_features(endpoint: Endpoint) -> list[Feature]:
     """Features that become read-only entities.
 
     A feature qualifies when it currently reports a value and is either
-    read-only, an action (whose value is a status, not a setting), or sits on a
-    blocked endpoint -- a blocked endpoint's writable features may only ever be
-    read. Features carrying no value would only ever be unknown, and
+    read-only or an action (whose value is a status, not a setting).
+    Features carrying no value would only ever be unknown, and
     ``connectivity`` is deliberately excluded (see ``_NEVER_SENSORS``).
     """
     return [
@@ -373,7 +362,6 @@ def sensor_features(endpoint: Endpoint) -> list[Feature]:
         if feature.name not in _NEVER_SENSORS
         and (
             not feature.writable
-            or endpoint.blocked
             or feature.name in _ALWAYS_SENSORS
         )
         and endpoint.live_value(feature) is not None
@@ -381,24 +369,18 @@ def sensor_features(endpoint: Endpoint) -> list[Feature]:
 
 
 def is_controllable(endpoint: Endpoint) -> bool:
-    """Whether this endpoint may produce writable entities."""
-    return (
-        not endpoint.blocked
-        and endpoint.display_category in CONTROLLABLE_CATEGORIES
-        and any(feature.writable for feature in endpoint.features.values())
-    )
+    """Whether the central capability plan yields any writable entity."""
+    # Deferred import avoids a module cycle: features consumes these models.
+    from .features import entity_plan
+
+    return any(platform != "sensor" for platform in entity_plan(endpoint))
 
 
 def produces_entities(endpoint: Endpoint) -> bool:
-    """Whether this endpoint would yield anything at all in Home Assistant.
+    """The picker offers exactly the endpoints that the platforms can import."""
+    from .features import entity_plan
 
-    An Alexa account is mostly not devices: Echo speakers, phone apps, scene
-    triggers and skill shims all arrive as endpoints alongside the real
-    hardware. On the reference account 63 of 73 endpoints produce nothing.
-    Offering those in the device picker invites the user to tick something that
-    then yields no entity, so the picker asks this first.
-    """
-    return bool(sensor_features(endpoint)) or is_controllable(endpoint)
+    return bool(entity_plan(endpoint))
 
 
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:

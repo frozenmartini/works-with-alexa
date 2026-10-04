@@ -22,17 +22,21 @@ from .api import AmazonAlexaSession
 from .const import (
     CONF_DEVICE_SERIAL,
     CONF_INCLUDE_ENDPOINTS,
+    CONF_INCLUDE_SCENES,
     CONF_MAC_DMS,
     CONF_REFRESH_TOKEN,
     CONF_URL,
     DOMAIN,
 )
 from .coordinator import WorksWithAlexaCoordinator
+from .dev_logging import async_enable_evidence_logging, event
+from .features import writable_feature_keys
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
+    Platform.BUTTON,
     Platform.LOCK,
     Platform.NUMBER,
     Platform.SELECT,
@@ -43,10 +47,17 @@ PLATFORMS: list[Platform] = [
 type WorksWithAlexaConfigEntry = ConfigEntry[WorksWithAlexaCoordinator]
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    await async_enable_evidence_logging(hass)
+    return True
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
 ) -> bool:
     """Rebuild the session from the stored refresh token."""
+    await async_enable_evidence_logging(hass)
+    event(_LOGGER, "entry.setup.started", entry_id=entry.entry_id)
     session = AmazonAlexaSession(
         async_get_clientsession(hass),
         domain=entry.data[CONF_URL],
@@ -78,11 +89,15 @@ async def async_setup_entry(
 
     entry.runtime_data = coordinator
     _purge_deselected(hass, entry, coordinator)
+    _purge_deselected_scenes(hass, entry)
+    _purge_reclassified_sensors(hass, entry, coordinator)
     _purge_built_fan(hass, entry)
     # The device selection and the polling interval are both read at setup, so
     # changing either from the options flow needs the entry to come back up.
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    event(_LOGGER, "entry.setup.completed", entry_id=entry.entry_id,
+          selected_devices=len(coordinator.selected), selected_scenes=len(coordinator.selected_scenes))
     return True
 
 
@@ -107,6 +122,8 @@ def _purge_deselected(
 
     registry = dr.async_get(hass)
     keep = set(coordinator.selected)
+    if entry.options.get(CONF_INCLUDE_SCENES, []):
+        keep.add(f"{entry.entry_id}:scenes")
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
         ours = {
             identifier
@@ -138,7 +155,47 @@ async def async_remove_config_entry_device(
     ours = {
         identifier for domain, identifier in device.identifiers if domain == DOMAIN
     }
-    return not (ours & set(coordinator.selected))
+    keep = set(coordinator.selected)
+    if entry.options.get(CONF_INCLUDE_SCENES, []):
+        keep.add(f"{entry.entry_id}:scenes")
+    return not (ours & keep)
+
+
+@callback
+def _purge_deselected_scenes(hass: HomeAssistant, entry: WorksWithAlexaConfigEntry) -> None:
+    """Remove unticked buttons without removing the remaining Scenes group."""
+    selected = set(entry.options.get(CONF_INCLUDE_SCENES, []))
+    prefix = f"{entry.entry_id}:scene:"
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (
+            entity.domain == "button"
+            and entity.unique_id.startswith(prefix)
+            and entity.unique_id[len(prefix):] not in selected
+        ):
+            registry.async_remove(entity.entity_id)
+    if not selected:
+        devices = dr.async_get(hass)
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+            if (DOMAIN, f"{entry.entry_id}:scenes") in device.identifiers:
+                devices.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
+
+
+@callback
+def _purge_reclassified_sensors(
+    hass: HomeAssistant, entry: WorksWithAlexaConfigEntry, coordinator: WorksWithAlexaCoordinator
+) -> None:
+    """Replace old manufacturer-blocked sensors with their writable entities."""
+    replaced = {
+        f"{endpoint.endpoint_id}:{key}"
+        for endpoint in coordinator.selected.values()
+        for key in writable_feature_keys(endpoint)
+    }
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.domain == "sensor" and entity.unique_id in replaced:
+            event(_LOGGER, "entity.reclassified", old_platform="sensor")
+            registry.async_remove(entity.entity_id)
 
 
 @callback
@@ -160,6 +217,7 @@ async def _async_options_updated(
     hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
 ) -> None:
     """Reload so new options take effect."""
+    event(_LOGGER, "options.updated", entry_id=entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -167,4 +225,5 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
 ) -> bool:
     """Unload the entry and its platforms."""
+    event(_LOGGER, "entry.unload", entry_id=entry.entry_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

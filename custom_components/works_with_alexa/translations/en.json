@@ -8,7 +8,8 @@
           "import_alexa_media": "Borrow the sign-in from Alexa Media Player (recommended)",
           "import_token": "Use an existing credential bundle",
           "login_password": "Sign in with email, password and 2FA key (the Alexa Media Player way)",
-          "login": "Sign in to Amazon with a blank form (not working yet)"
+          "login": "Sign in to Amazon with a blank form (not working yet)",
+          "login_direct": "Try direct Amazon sign-in (separate experimental token)"
         }
       },
       "import_alexa_media": {
@@ -78,7 +79,7 @@
       },
       "devices_pick": {
         "title": "Choose devices",
-        "description": "Tick each of the {count} devices you want in Home Assistant: one entity per Alexa feature (switch, select, number, sensor, lock), exactly as Alexa reports it. Nothing is assembled here; build fans and other whole devices from these entities in Kitbash.",
+        "description": "Tick each of the {count} devices you want in Home Assistant: one entity per Alexa feature (switch, select, number, sensor, lock), exactly as Alexa reports it. Nothing is assembled here; build fans and other whole devices from these entities in Kitbash. Scene selection follows on a separate screen.",
         "data": {
           "include_endpoints": "Devices"
         },
@@ -93,7 +94,34 @@
           "import_alexa_media": "Borrow the sign-in from Alexa Media Player (recommended)",
           "import_token": "Use an existing credential bundle",
           "login_password": "Sign in with email, password and 2FA key (the Alexa Media Player way)",
-          "login": "Sign in to Amazon with a blank form (not working yet)"
+          "login": "Sign in to Amazon with a blank form (not working yet)",
+          "login_direct": "Try direct Amazon sign-in (separate experimental token)"
+        }
+      },
+      "login_direct": {
+        "title": "Sign in directly on Amazon",
+        "description": "Choose your Amazon marketplace. On the next screen, open Amazon in a separate browser tab and sign in there. Your password and one-time code are entered only on Amazon. The resulting token is saved separately for testing; this does not add an integration or replace your existing credentials. Every successful sign-in is saved as a separate experiment; earlier tokens are kept.",
+        "data": {
+          "url": "Amazon marketplace",
+          "experiment_name": "Experiment name (for example, Incognito with 2FA)"
+        }
+      },
+      "direct_redirect": {
+        "title": "Complete Amazon sign-in",
+        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this Home Assistant form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. When you reach a URL containing `/ap/maplanding`, copy the **full address-bar URL**. A blank or error page there is expected.\n4. Paste that URL below and submit promptly.\n\nThe token is saved separately for a standalone API test. No devices are added and your main integration credentials are kept. If saving fails, retry: credentials already issued are kept for this attempt. If Amazon rejects the sign-in or the code has expired, select **Start a new sign-in** and submit to get a fresh link. Never share the redirect URL.",
+        "data": {
+          "redirect_url": "Full Amazon redirect URL",
+          "restart_login": "Start a new sign-in"
+        }
+      },
+      "scenes": {
+        "title": "Scenes",
+        "description": "Choose from {count} Alexa scenes. All scenes start unselected. Selected scenes become buttons grouped in one Scenes card. Pressing a button activates that scene. Removing a selection deletes its button.",
+        "data": {
+          "include_scenes": "Scenes"
+        },
+        "data_description": {
+          "include_scenes": "One button per scene. Scene selection is separate from devices."
         }
       }
     },
@@ -102,23 +130,29 @@
       "cannot_connect": "Could not reach Amazon. Check your connection and try again.",
       "invalid_bundle": "That is not a usable credential bundle. It must be JSON containing refreshToken, macDms and deviceSerial.",
       "invalid_auth": "Amazon rejected those credentials. The refresh token may have been revoked.",
-      "2fa_key_invalid": "That is not a valid authenticator key. It should be the 52-character key Amazon shows when you add an authenticator app: letters A to Z and digits 2 to 7, spaces allowed."
+      "2fa_key_invalid": "That is not a valid authenticator key. It should be the 52-character key Amazon shows when you add an authenticator app: letters A to Z and digits 2 to 7, spaces allowed.",
+      "invalid_redirect": "Paste the full HTTPS URL from the final /ap/maplanding page on the marketplace you selected, including its authorization code.",
+      "direct_login_failed": "Amazon rejected the sign-in or registration. Select Start a new sign-in and complete Amazon sign-in again.",
+      "experiment_save_failed": "Could not save the experimental credentials. Check Home Assistant storage permissions and retry without starting a new sign-in."
     },
     "abort": {
       "already_configured": "This Amazon account is already set up.",
       "proxy_missing": "The login session was lost. Start again.",
       "no_alexa_media": "No Alexa Media Player account with a stored sign-in was found.",
       "reauth_successful": "Re-authentication was successful.",
-      "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for."
+      "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for.",
+      "experiment_saved": "Experimental token saved separately as {experiment_id}. Earlier experiments and your existing integration credentials were kept. No devices were added. The token is ready for a standalone API test."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Works with Alexa options",
-        "description": "Changes reload the integration.",
-        "data": {
-          "scan_interval": "Polling interval (seconds)"
+        "description": "Add or remove devices and scenes without signing in again. Saved changes reload this integration.",
+        "menu_options": {
+          "devices": "Manage devices \u2014 add, edit or remove",
+          "scenes": "Manage scenes",
+          "polling": "Polling interval"
         }
       },
       "devices": {
@@ -133,14 +167,34 @@
       },
       "devices_pick": {
         "title": "Choose devices",
-        "description": "Tick each of the {count} devices you want in Home Assistant: one entity per Alexa feature (switch, select, number, sensor, lock). Nothing is assembled here; build whole devices from these entities in Kitbash. Unticking one deletes its entities.",
+        "description": "Tick each of the {count} devices you want in Home Assistant: one entity per Alexa feature (switch, select, number, sensor, lock). Nothing is assembled here; build whole devices from these entities in Kitbash. Unticking one deletes its entities. Scene selection follows on a separate screen.",
         "data": {
           "include_endpoints": "Devices"
         },
         "data_description": {
           "include_endpoints": "One entity per feature, nothing assembled."
         }
+      },
+      "scenes": {
+        "title": "Scenes",
+        "description": "Choose from {count} Alexa scenes. All scenes start unselected. Selected scenes become buttons grouped in one Scenes card. Pressing a button activates that scene. Removing a selection deletes its button.",
+        "data": {
+          "include_scenes": "Scenes"
+        },
+        "data_description": {
+          "include_scenes": "One button per scene. Scene selection is separate from devices."
+        }
+      },
+      "polling": {
+        "title": "Polling interval",
+        "description": "Choose how often device state and scene discovery are refreshed.",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        }
       }
+    },
+    "error": {
+      "entry_unavailable": "The integration inventory is unavailable. Load or reload the integration, then try again. Your saved selections are kept."
     }
   }
 }

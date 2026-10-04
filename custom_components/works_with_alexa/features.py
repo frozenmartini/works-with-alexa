@@ -17,7 +17,10 @@ carries it:
 * ``lock`` -> lock (a lock/unlock pair has no plainer primitive);
 * anything read-only with a value -> sensor.
 
-Chosen through the device picker. The owner's second integration (kitbash)
+Classification uses feature operations, options and bounds, never manufacturer
+or accessory category. Unknown capabilities produce no writable entity until
+their protocol is implemented. Chosen through the device picker. The owner's
+second integration (kitbash)
 assembles these into HA- and HomeKit-shaped devices, so raw and complete beats
 clever. Raw entities carry the feature key in their unique id.
 """
@@ -34,7 +37,6 @@ from .models import (
     Endpoint,
     Feature,
     humanise,
-    is_controllable,
     sensor_features,
 )
 
@@ -49,14 +51,12 @@ SET_TARGET_SETPOINT = "setTargetSetpoint"
 
 def _writable_power(endpoint: Endpoint) -> Feature | None:
     power = endpoint.feature(FEATURE_POWER)
-    return power if power is not None and power.writable else None
+    return power if power is not None and {"turnOn", "turnOff"} <= power.operations else None
 
 
 # --- raw: lock ------------------------------------------------------------------
 def lock_feature(endpoint: Endpoint) -> Feature | None:
     """A ``lock`` feature that can both lock and unlock."""
-    if not is_controllable(endpoint):
-        return None
     lock = endpoint.feature(FEATURE_LOCK)
     if lock is not None and {"lock", "unlock"} <= lock.operations:
         return lock
@@ -69,13 +69,7 @@ def is_lock(endpoint: Endpoint) -> bool:
 
 # --- raw: thermostat ------------------------------------------------------------
 def thermostat_feature(endpoint: Endpoint) -> Feature | None:
-    """A writable ``thermostat`` feature on a controllable endpoint.
-
-    The Anthem carries one too, but it is blocked (Kohler) and category OTHER,
-    so it stays read-only sensors (ref/08).
-    """
-    if not is_controllable(endpoint):
-        return None
+    """A writable ``thermostat`` feature, independent of accessory category."""
     thermostat = endpoint.feature(FEATURE_THERMOSTAT)
     if thermostat is not None and thermostat.writable:
         return thermostat
@@ -108,44 +102,38 @@ def thermostat_mode_feature(endpoint: Endpoint) -> Feature | None:
 
 # --- raw: primitives ------------------------------------------------------------
 def power_switch_feature(endpoint: Endpoint) -> Feature | None:
-    """Writable power on any controllable endpoint, fans included."""
-    if not is_controllable(endpoint):
-        return None
+    """Power with both supported commands, independent of category."""
     return _writable_power(endpoint)
 
 
 def switch_features(endpoint: Endpoint) -> list[Feature]:
     """Power first, then every writable toggle."""
-    if not is_controllable(endpoint):
-        return []
     features: list[Feature] = []
     if (power := power_switch_feature(endpoint)) is not None:
         features.append(power)
     features.extend(
-        feature for feature in endpoint.features_named(FEATURE_TOGGLE) if feature.writable
+        feature for feature in endpoint.features_named(FEATURE_TOGGLE)
+        if {"turnOn", "turnOff"} <= feature.operations
     )
     return features
 
 
 def select_features(endpoint: Endpoint) -> list[Feature]:
     """Every writable mode with options, the speed mode included."""
-    if not is_controllable(endpoint):
-        return []
     return [
         feature
         for feature in endpoint.features_named(FEATURE_MODE)
-        if feature.writable and feature.mode_options
+        if "setMode" in feature.operations and feature.mode_options
     ]
 
 
 def number_features(endpoint: Endpoint) -> list[Feature]:
     """Every writable range with bounds."""
-    if not is_controllable(endpoint):
-        return []
     return [
         feature
         for feature in endpoint.features_named(FEATURE_RANGE)
-        if feature.writable and feature.minimum is not None and feature.maximum is not None
+        if "setRangeValue" in feature.operations
+        and feature.minimum is not None and feature.maximum is not None
     ]
 
 
@@ -172,3 +160,14 @@ def entity_plan(endpoint: Endpoint) -> dict[str, list[str]]:
         if names:
             plan[platform] = names
     return plan
+
+
+def writable_feature_keys(endpoint: Endpoint) -> set[str]:
+    """Feature identities represented by supported writable entities."""
+    features = [*switch_features(endpoint), *select_features(endpoint), *number_features(endpoint)]
+    if (lock := lock_feature(endpoint)) is not None:
+        features.append(lock)
+    thermostat = thermostat_feature(endpoint)
+    if thermostat is not None and (setpoint_properties(endpoint) or thermostat_mode_feature(endpoint) is not None):
+        features.append(thermostat)
+    return {feature.key for feature in features}

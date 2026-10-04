@@ -17,6 +17,24 @@ from __future__ import annotations
 
 from typing import Any
 
+# Live-tested with Close Vanes. Automation IDs are distinct from endpoint IDs.
+SCENES_QUERY = """
+query Scenes($input: AutomationsInput!) {
+  automations(input: $input) {
+    items { __typename ... on ThirdPartyScene { id name type } }
+    nextToken
+  }
+}
+"""
+
+ACTIVATE_SCENE_MUTATION = """
+mutation ActivateScene($input: ActivateAutomationInput!) {
+  activateAutomation(input: $input) {
+    automation { __typename ... on ThirdPartyScene { name type lastActivatedAt } }
+  }
+}
+"""
+
 # One bulk query returns discovery *and* live state for every endpoint: ~550 ms
 # for 73 endpoints, against ~22 s to poll them individually (ref/09). Asking for
 # `configuration` alongside `properties` means capability and state arrive

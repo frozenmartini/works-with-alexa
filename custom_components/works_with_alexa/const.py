@@ -97,6 +97,7 @@ HASS_URL_CHECK_TIMEOUT: Final = 10
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 # The raw layer: endpoints exposed one entity per feature. Absent means all.
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
+CONF_INCLUDE_SCENES: Final = "include_scenes"
 # "built_endpoints" was the built layer's option until 2026-09-13, when the
 # assembled Window Fan moved to kitbash; entries may still carry it, ignored.
 CONF_EXCLUDE_ENDPOINTS: Final = "exclude_endpoints"
@@ -104,32 +105,6 @@ CONF_READ_ONLY_ENDPOINTS: Final = "read_only_endpoints"
 
 DEFAULT_SCAN_INTERVAL: Final = 60
 MIN_SCAN_INTERVAL: Final = 15
-
-# --- Safety ---------------------------------------------------------------------
-# Standing user directive: the Kohler Anthem is a shower valve. Turning it on runs
-# water. It is never written to by this integration. Endpoints whose manufacturer
-# matches are barred from producing writable entities at discovery time, in
-# addition to the user-editable CONF_READ_ONLY_ENDPOINTS option.
-BLOCKED_MANUFACTURERS: Final = frozenset({"kohler"})
-
-# Writable entities are only created for endpoints in these display categories.
-# Every endpoint on the account -- Echo speakers, phone apps, Fire TV
-# applications -- arrives through the same power/mode/range/toggle mechanism, so
-# an ungated control platform would start driving things nobody asked for (the
-# Silk Browser carries a `mode`). The set is the device classes the owner asked
-# to expose raw on 2026-09-13: fans, blinds, locks, thermostats and vacuums.
-# Read-only sensors are not gated this way; reading anything is harmless.
-CONTROLLABLE_CATEGORIES: Final = frozenset(
-    {
-        "FAN",
-        "INTERIOR_BLIND",
-        "EXTERIOR_BLIND",
-        "SMARTLOCK",
-        "THERMOSTAT",
-        "VACUUM_CLEANER",
-    }
-)
-
 
 # Token refresh happens this many seconds before the access token actually expires.
 TOKEN_EXPIRY_MARGIN: Final = 300

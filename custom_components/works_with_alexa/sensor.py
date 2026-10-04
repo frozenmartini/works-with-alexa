@@ -1,13 +1,9 @@
 """Read-only entities for Works with Alexa.
 
-A feature becomes a sensor when it reports a value and is either read-only or
-sits on a blocked endpoint -- a temperature, the Window Fan's Air Temperature, a
-vacuum's action status (IDLE / RUNNING). Connectivity is the exception: every
-endpoint carries it, so it feeds the ``reachable`` attribute instead. The second half is the Anthem rule: a Kohler valve
-runs water, so every one of its features -- including the ones Alexa says are
-writable -- may only ever be read (see ``BLOCKED_MANUFACTURERS``). Writable
-features on unblocked endpoints are deliberately left alone here; they belong to
-the control platforms.
+A feature becomes a sensor when it reports a value and is read-only, or its
+value represents action status. Connectivity feeds the reachable attribute
+instead. The central capability plan assigns writable controls to their own
+platforms, independent of manufacturer or device category.
 """
 
 from __future__ import annotations

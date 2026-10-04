@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
+from .dev_logging import event
 from .models import Endpoint, Feature
 from .protocol import WorksWithAlexaError
 
@@ -47,6 +50,16 @@ def _same_value(reported: Any, assumed: Any) -> bool:
         return str(reported) == str(assumed)
 
 
+class _OptimisticState:
+    """One pending value, retaining earlier attempts for correct rollback."""
+
+    def __init__(self, value: Any, deadline: float, previous: _OptimisticState | None = None) -> None:
+        self.value = value
+        self.deadline = deadline
+        self.previous = previous
+        self.rejected = False
+
+
 class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
     """One feature of one endpoint."""
 
@@ -63,8 +76,9 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         self._feature_key = feature.key
         self._feature_name = feature.name
         self._instance = feature.instance
-        # feature key -> (assumed value, monotonic deadline)
-        self._optimistic: dict[str, tuple[Any, float]] = {}
+        # feature key -> latest pending state
+        self._optimistic: dict[str, _OptimisticState] = {}
+        self._cancel_optimistic_expiry: Callable[[], None] | None = None
 
         self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}"
         self._attr_device_info = DeviceInfo(
@@ -131,8 +145,8 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         :meth:`feature_value` to see their own optimistic writes.
         """
         assumed = self._optimistic.get(f"{self._feature_key}/{prop}")
-        if assumed is not None and time.monotonic() < assumed[1]:
-            return assumed[0]
+        if assumed is not None and time.monotonic() < assumed.deadline:
+            return assumed.value
         feature = self.feature
         return feature.property_value(prop) if feature is not None else None
 
@@ -146,8 +160,8 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         if key is None:
             return None
         assumed = self._optimistic.get(key)
-        if assumed is not None and time.monotonic() < assumed[1]:
-            return assumed[0]
+        if assumed is not None and time.monotonic() < assumed.deadline:
+            return assumed.value
 
         endpoint = self.endpoint
         if endpoint is None:
@@ -162,19 +176,57 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         """Current value with the power-off sentinel filtered out."""
         return self.feature_value(self._feature_key)
 
-    def _assume(self, key: str, value: Any) -> None:
+    def _assume(self, key: str, value: Any) -> _OptimisticState:
         """Hold a value locally until the device confirms it or it goes stale."""
-        self._optimistic[key] = (value, time.monotonic() + OPTIMISTIC_TIMEOUT)
+        record = _OptimisticState(value, time.monotonic() + OPTIMISTIC_TIMEOUT, self._optimistic.get(key))
+        self._optimistic[key] = record
+        self._schedule_optimistic_expiry()
+        event(_LOGGER, "optimistic.applied", feature=key)
+        return record
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._cancel_optimistic_timer)
+
+    @callback
+    def _cancel_optimistic_timer(self) -> None:
+        if self._cancel_optimistic_expiry is not None:
+            self._cancel_optimistic_expiry()
+            self._cancel_optimistic_expiry = None
+
+    @callback
+    def _schedule_optimistic_expiry(self) -> None:
+        """Revert stale assumptions even when the polling interval is longer."""
+        self._cancel_optimistic_timer()
+        if self._optimistic:
+            next_expiry = min(state.deadline for state in self._optimistic.values())
+            self._cancel_optimistic_expiry = async_call_later(
+                self.hass, max(0.0, next_expiry - time.monotonic()), self._expire_optimistic
+            )
+
+    @callback
+    def _expire_optimistic(self, _now: Any) -> None:
+        self._cancel_optimistic_expiry = None
+        now = time.monotonic()
+        expired = [key for key, state in self._optimistic.items() if now >= state.deadline]
+        for key in expired:
+            self._optimistic.pop(key)
+            event(_LOGGER, "optimistic.expired", feature=key)
+        self._schedule_optimistic_expiry()
+        if expired:
+            self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Drop assumptions the device has caught up with, or that went stale."""
         endpoint = self.endpoint
         now = time.monotonic()
-        for key, (value, expires) in list(self._optimistic.items()):
-            confirmed = endpoint is not None and _same_value(self._reported(key), value)
-            if confirmed or now >= expires:
+        for key, state in list(self._optimistic.items()):
+            confirmed = endpoint is not None and _same_value(self._reported(key), state.value)
+            if confirmed or now >= state.deadline:
                 del self._optimistic[key]
+                event(_LOGGER, "optimistic.confirmed" if confirmed else "optimistic.expired", feature=key)
+        self._schedule_optimistic_expiry()
         super()._handle_coordinator_update()
 
     async def async_control(
@@ -201,17 +253,9 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         A command that fails rolls the assumption back, so a write that never
         happened still cannot leave a lie on screen.
 
-        The blocked check is defence in depth. Platforms already skip blocked
-        endpoints at discovery, but a write is irreversible in the physical
-        world -- the Kohler Anthem runs water -- so it is re-checked at the last
-        moment before the request leaves.
+        Capability classification happens centrally in features.py; each platform
+        exposes only the commands it supports.
         """
-        endpoint = self.endpoint
-        if endpoint is not None and endpoint.blocked:
-            raise HomeAssistantError(
-                f"{endpoint.friendly_name} is read-only and will not be written to"
-            )
-
         target_key = self._feature_key
         if feature_name:
             target_key = f"{feature_name}/{instance}" if instance else feature_name
@@ -219,8 +263,7 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
             target_key = f"{target_key}/{assume_property}"
 
         if assume is not _UNSET:
-            previous = self._optimistic.get(target_key, _UNSET)
-            self._assume(target_key, assume)
+            assumed_record = self._assume(target_key, assume)
             self.async_write_ha_state()
 
         try:
@@ -233,12 +276,20 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
             )
         except WorksWithAlexaError as err:
             if assume is not _UNSET:
-                # The command never happened. Put back whatever was showing.
-                if previous is _UNSET:
-                    self._optimistic.pop(target_key, None)
-                else:
-                    self._optimistic[target_key] = previous
-                self.async_write_ha_state()
+                assumed_record.rejected = True
+                if self._optimistic.get(target_key) is assumed_record:
+                    # Older failures must neither overwrite a newer command nor
+                    # be resurrected if the newer command also fails later.
+                    previous = assumed_record.previous
+                    while previous is not None and previous.rejected:
+                        previous = previous.previous
+                    if previous is None:
+                        self._optimistic.pop(target_key, None)
+                    else:
+                        self._optimistic[target_key] = previous
+                    self._schedule_optimistic_expiry()
+                    event(_LOGGER, "optimistic.rolled_back", feature=target_key)
+                    self.async_write_ha_state()
             raise HomeAssistantError(
                 f"{operation} failed on {self._feature_key}: {err}"
             ) from err

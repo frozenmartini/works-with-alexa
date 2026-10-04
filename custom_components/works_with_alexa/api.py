@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
 from yarl import URL
@@ -30,6 +32,8 @@ from .const import (
     USER_AGENT,
 )
 from .models import Endpoint, parse_endpoint
+from .dev_logging import event, operation as logged_operation
+from .scenes import AlexaScene
 from .protocol import (
     ApiConnectionError,
     AuthError,
@@ -42,7 +46,9 @@ from .protocol import (
     raise_for_throttle,
 )
 from .queries import (
+    ACTIVATE_SCENE_MUTATION,
     ENDPOINTS_QUERY,
+    SCENES_QUERY,
     SET_ENDPOINT_FEATURES_MUTATION,
     feature_control_request,
 )
@@ -114,6 +120,15 @@ class AmazonAlexaSession:
             await self._async_refresh()
         await self._async_rebuild_web_session()
 
+    async def async_refresh_access_token(self) -> None:
+        """Refresh the bearer token alone, without cookies or device requests.
+
+        Used by the standalone experiment to test the /auth/token exchange.
+        Any rotated refresh token remains available via refresh_token.
+        """
+        async with self._lock:
+            await self._async_refresh()
+
     async def async_get_account_email(self) -> str | None:
         """Read the authenticated account's email.
 
@@ -149,6 +164,8 @@ class AmazonAlexaSession:
         auth failure is what kills sessions needlessly, and the credential is
         rarely the thing at fault (ref/05).
         """
+        refresh_started = time.monotonic()
+        event(_LOGGER, "auth.refresh.started")
         payload = {
             **_DEVICE_SHAPE,
             "source_token": self._refresh_token,
@@ -168,15 +185,19 @@ class AmazonAlexaSession:
         last_error: Exception | None = None
         for attempt, backoff in enumerate(_REFRESH_BACKOFF):
             try:
+                event(_LOGGER, "auth.refresh.sent", attempt=attempt + 1)
                 async with self._session.post(
                     url, json=payload, headers=headers
                 ) as response:
                     body = await response.text()
                     status = response.status
             except (aiohttp.ClientError, TimeoutError) as err:
+                event(_LOGGER, "auth.refresh.transport_failed", error_type=type(err).__name__, attempt=attempt + 1)
                 last_error = err
             else:
+                event(_LOGGER, "auth.refresh.received", status=status, attempt=attempt + 1)
                 if status in (401, 403):
+                    event(_LOGGER, "auth.refresh.rejected", level=logging.ERROR, status=status)
                     # The credential itself was refused. Retrying cannot help.
                     raise AuthError(
                         f"Amazon rejected the refresh token (HTTP {status})"
@@ -184,12 +205,14 @@ class AmazonAlexaSession:
                 raise_for_throttle(body)
                 if status < 400:
                     self._apply_tokens(extract_tokens(parse_json(body)))
+                    event(_LOGGER, "auth.refresh.completed", elapsed_ms=round((time.monotonic() - refresh_started) * 1000, 3))
                     return
                 last_error = ApiConnectionError(f"Token refresh returned HTTP {status}")
 
             if attempt + 1 < len(_REFRESH_BACKOFF):
                 await asyncio.sleep(backoff)
 
+        event(_LOGGER, "auth.refresh.failed", level=logging.ERROR, elapsed_ms=round((time.monotonic() - refresh_started) * 1000, 3))
         raise ApiConnectionError(
             f"Token refresh failed after {len(_REFRESH_BACKOFF)} attempts"
         ) from last_error
@@ -317,6 +340,10 @@ class AmazonAlexaSession:
         _retried: bool = False,
     ) -> Any:
         await self._async_ensure_token()
+        started = time.monotonic()
+        path = URL(url).path
+        http_id = uuid4().hex
+        event(_LOGGER, "http.sent", method=method, path=path, retry=_retried, http_id=http_id)
         try:
             async with self._session.request(
                 method, url, json=json_body, params=params, headers=self._headers()
@@ -324,7 +351,12 @@ class AmazonAlexaSession:
                 body = await response.text()
                 status = response.status
         except (aiohttp.ClientError, TimeoutError) as err:
+            event(_LOGGER, "http.failed", level=logging.ERROR, method=method, path=path, http_id=http_id,
+                  error_type=type(err).__name__, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
             raise ApiConnectionError(f"Request to {url} failed: {err}") from err
+
+        event(_LOGGER, "http.received", method=method, path=path, status=status, http_id=http_id,
+              retry=_retried, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
 
         if status in (401, 403):
             if _retried:
@@ -364,12 +396,66 @@ class AmazonAlexaSession:
         payload: dict[str, Any] = {"query": query}
         if variables is not None:
             payload["variables"] = variables
-        result = await self._async_request(
-            "POST", f"https://alexa.{self._domain}{GRAPHQL_PATH}", json_body=payload
-        )
-        return check_graphql_response(result)
+        match = re.search(r"(?:query|mutation)\s+(\w+)", query)
+        with logged_operation(_LOGGER, "graphql", operation=match.group(1) if match else "anonymous"):
+            result = await self._async_request(
+                "POST", f"https://alexa.{self._domain}{GRAPHQL_PATH}", json_body=payload
+            )
+            if isinstance(result, dict) and result.get("errors"):
+                errors = result["errors"]
+                event(_LOGGER, "graphql.errors", level=logging.ERROR, error_count=len(errors))
+            return check_graphql_response(result)
 
     # --- operations ---------------------------------------------------------
+
+    async def async_get_scenes(self) -> dict[str, AlexaScene]:
+        """Discover third-party scenes using Amazon's required 20-item pages."""
+        scenes: dict[str, AlexaScene] = {}
+        tokens: set[str] = set()
+        page_input: dict[str, Any] = {
+            "limit": 20,
+            "locale": "en-US",
+            "filter": {"types": ["THIRD_PARTY_SCENE"]},
+        }
+        while True:
+            data = await self._async_graphql(SCENES_QUERY, {"input": page_input.copy()})
+            page = data.get("automations")
+            if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+                raise ApiConnectionError("Amazon returned an invalid scene list")
+            for item in page["items"]:
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "THIRD_PARTY_SCENE"
+                    and isinstance(item.get("id"), str)
+                    and item["id"]
+                    and isinstance(item.get("name"), str)
+                    and item["name"].strip()
+                ):
+                    scenes[item["id"]] = AlexaScene(item["id"], item["name"].strip())
+            token = page.get("nextToken")
+            if not token:
+                return scenes
+            if not isinstance(token, str) or token in tokens:
+                raise ApiConnectionError("Amazon returned invalid scene pagination")
+            tokens.add(token)
+            page_input["nextToken"] = token
+
+    async def async_activate_scene(self, automation_id: str) -> None:
+        """Activate once; Amazon's placeholder response cannot verify the effect."""
+        with logged_operation(_LOGGER, "scene.activate"):
+            data = await self._async_graphql(
+                ACTIVATE_SCENE_MUTATION,
+                {"input": {
+                    "automationId": automation_id,
+                    "automationType": "THIRD_PARTY_SCENE",
+                }},
+            )
+            automation = (data.get("activateAutomation") or {}).get("automation")
+            if not automation:
+                raise ApiConnectionError("Amazon did not acknowledge scene activation")
+            event(_LOGGER, "scene.acknowledgement", level=logging.INFO,
+                  response_name=automation.get("name"), response_type=automation.get("type"),
+                  last_activated_at=automation.get("lastActivatedAt"), physical_execution_verified=False)
 
     async def async_get_endpoints(self) -> dict[str, Endpoint]:
         """Fetch every endpoint with its live state, in one request."""
@@ -397,7 +483,18 @@ class AmazonAlexaSession:
         request = feature_control_request(
             endpoint_id, feature_name, operation, instance=instance, payload=payload
         )
-        data = await self._async_graphql(
-            SET_ENDPOINT_FEATURES_MUTATION, {"r": [request]}
-        )
-        return check_control_result(data, endpoint_id)
+        with logged_operation(_LOGGER, "feature.control", feature=feature_name, command=operation):
+            data = await self._async_graphql(
+                SET_ENDPOINT_FEATURES_MUTATION, {"r": [request]}
+            )
+            responses = data.get("setEndpointFeatures") or {}
+            # Log status codes without the endpoint identifiers or raw payload.
+            codes = [item.get("code") for item in
+                     [*(responses.get("featureControlResponses") or []), *(responses.get("errors") or [])]
+                     if isinstance(item, dict) and isinstance(item.get("code"), str)
+                     and re.fullmatch(r"[A-Z_]{1,64}", item["code"])]
+            event(_LOGGER, "feature.response", codes=codes)
+            result = check_control_result(data, endpoint_id)
+            event(_LOGGER, "feature.acknowledgement", feature=feature_name, command=operation,
+                  code=result.get("code"))
+            return result

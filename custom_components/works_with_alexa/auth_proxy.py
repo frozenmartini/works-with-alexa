@@ -160,7 +160,7 @@ class LoginRelay:
                 resp_headers = resp.headers.copy()
                 content_type = resp.headers.get("Content-Type", "")
         except aiohttp.ClientError as err:
-            _LOGGER.warning("Relay upstream error for %s: %s", upstream, err)
+            _LOGGER.warning("Relay upstream error at %s (%s)", upstream.path, type(err).__name__)
             return web.Response(status=502, text="Upstream error")
 
         # Capture cookies from every response, including the final one -- the

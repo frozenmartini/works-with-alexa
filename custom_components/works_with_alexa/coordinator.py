@@ -5,6 +5,9 @@ One bulk ``features[]`` query per interval returns every endpoint on the account
 polling for itself -- 73 endpoints on the reference account would otherwise mean
 73 requests per cycle against an API that signals throttling in the response
 body (ref/00 §6).
+
+Third-party scene discovery is a separate paginated query on each poll. Its
+transient failures make scene buttons unavailable without stopping device polls.
 """
 
 from __future__ import annotations
@@ -20,11 +23,14 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import AmazonAlexaSession
 from .const import (
     CONF_INCLUDE_ENDPOINTS,
+    CONF_INCLUDE_SCENES,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
 from .models import Endpoint
+from .dev_logging import event
+from .scenes import AlexaScene
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +55,14 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             ),
         )
         self.session = session
+        self.scenes: dict[str, AlexaScene] = {}
+        self.scenes_available = False
+
+    @property
+    def selected_scenes(self) -> dict[str, AlexaScene]:
+        """Scenes always require explicit opt-in, including existing entries."""
+        allowed = set(self.config_entry.options.get(CONF_INCLUDE_SCENES, []))
+        return {key: scene for key, scene in self.scenes.items() if key in allowed}
 
     @property
     def selected(self) -> dict[str, Endpoint]:
@@ -71,11 +85,26 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
 
     async def _async_update_data(self) -> dict[str, Endpoint]:
         """Fetch every endpoint, keyed by endpoint id."""
+        event(_LOGGER, "poll.started")
         try:
-            return await self.session.async_get_endpoints()
+            endpoints = await self.session.async_get_endpoints()
+            try:
+                self.scenes = await self.session.async_get_scenes()
+                self.scenes_available = True
+            except AuthError:
+                raise
+            except WorksWithAlexaError:
+                # A scene discovery outage must not stop physical device polling.
+                self.scenes_available = False
+                _LOGGER.warning("Could not refresh Alexa scenes; scene buttons are unavailable")
+            event(_LOGGER, "poll.completed", endpoints=len(endpoints), scenes=len(self.scenes),
+                  scenes_available=self.scenes_available)
+            return endpoints
         except AuthError as err:
+            event(_LOGGER, "poll.failed", level=logging.ERROR, error_type=type(err).__name__)
             # Never discard the stored credentials -- hand off to HA's reauth
             # flow and let it decide (ref/10).
             raise ConfigEntryAuthFailed(str(err)) from err
         except WorksWithAlexaError as err:
+            event(_LOGGER, "poll.failed", level=logging.ERROR, error_type=type(err).__name__)
             raise UpdateFailed(str(err)) from err
