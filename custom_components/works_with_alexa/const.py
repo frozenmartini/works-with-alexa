@@ -17,8 +17,7 @@ DEVICE_TYPE: Final = "A2IVLV5VM2W81"
 APP_NAME: Final = "Amazon Alexa"
 APP_VERSION: Final = "2.2.556530.0"
 USER_AGENT: Final = (
-    "AppleWebKit PitanguiBridge/2.2.556530.0-[HARDWARE=iPhone14_5]"
-    "[SOFTWARE=17.5.1][DEVICE=iPhone]"
+    "AmazonWebView/Amazon Alexa/2.2.556530.0/iOS/16.6/iPhone"
 )
 
 # --- Endpoints ------------------------------------------------------------------
@@ -51,18 +50,12 @@ COOKIE_EXCHANGE_PATH: Final = "/ap/exchangetoken/cookies"
 # There is no CSRF endpoint. The first of these that sets a `csrf` cookie wins,
 # tried in order against alexa.<domain> (ref/04 §1.1.6).
 CSRF_PATHS: Final = (
-    "/api/language",
     "/spa/index.html",
+    "/api/language",
     "/api/devices-v2/device?cached=false",
     "/templates/oobe/d-device-pick.handlebars",
+    "/api/strings",
 )
-
-AUTH_CALLBACK_PATH: Final = "/auth/works_with_alexa/callback"
-AUTH_CALLBACK_NAME: Final = "auth:works_with_alexa:callback"
-AUTH_PROXY_PATH: Final = "/auth/works_with_alexa/proxy"
-AUTH_PROXY_NAME: Final = "auth:works_with_alexa:proxy"
-
-DEFAULT_HASS_URL: Final = "http://homeassistant.local:8123"
 
 # --- Config entry keys ----------------------------------------------------------
 CONF_URL: Final = "url"
@@ -71,29 +64,6 @@ CONF_DEVICE_SERIAL: Final = "device_serial"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_MAC_DMS: Final = "mac_dms"
 
-CONF_CREDENTIALS: Final = "credentials"
-CONF_ACCOUNT: Final = "account"
-
-# The alexa_media_player integration registers against the same iOS app device
-# type as we do, so a refresh token it already holds works here (ref/10). Its
-# entry keeps the token under `oauth`, and derives the device serial from Home
-# Assistant's instance id -- see the borrow step in config_flow.
-ALEXA_MEDIA_DOMAIN: Final = "alexa_media"
-ALEXA_MEDIA_OAUTH: Final = "oauth"
-
-CONF_HASS_URL: Final = "hass_url"
-CONF_PUBLIC_URL: Final = "public_url"
-
-# Sign in the alexa_media_player way: credentials taken up front and typed into
-# Amazon's own pages by the relay, including the 2SV one-time code made from the
-# authenticator app key. Email, password and key live only in the config flow;
-# none is persisted -- the entry keeps the refresh token, as on every path.
-CONF_OTP_SECRET: Final = "otp_secret"
-CONF_TOTP_REGISTER: Final = "registered"
-CONF_PROXY_WARNING: Final = "proxy_warning"
-# Seconds Home Assistant gets to fetch its own URL before the flow warns that
-# the browser may not reach it either.
-HASS_URL_CHECK_TIMEOUT: Final = 10
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 # The raw layer: endpoints exposed one entity per feature. Absent means all.
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
@@ -106,8 +76,8 @@ CONF_READ_ONLY_ENDPOINTS: Final = "read_only_endpoints"
 DEFAULT_SCAN_INTERVAL: Final = 60
 MIN_SCAN_INTERVAL: Final = 15
 
-# Token refresh happens this many seconds before the access token actually expires.
-TOKEN_EXPIRY_MARGIN: Final = 300
+# Refresh 30 seconds before Amazon's reported access-token expiry.
+TOKEN_EXPIRY_MARGIN: Final = 30
 
 # Throttling is signalled in the response *body*, not the HTTP status (ref/00 §6).
 THROTTLE_MARKERS: Final = (

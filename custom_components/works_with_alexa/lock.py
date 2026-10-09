@@ -50,6 +50,7 @@ class WorksWithAlexaLock(WorksWithAlexaEntity, LockEntity):
     """One lock feature."""
 
     _attr_name = None  # the lock is the device
+    _wwa_operations = frozenset({"lock", "unlock"})
 
     def __init__(
         self,

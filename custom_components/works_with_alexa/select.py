@@ -55,6 +55,8 @@ async def async_setup_entry(
 class WorksWithAlexaSelect(WorksWithAlexaEntity, SelectEntity):
     """One writable mode feature, presented with the device's own labels."""
 
+    _wwa_operations = frozenset({"setMode"})
+
     def __init__(
         self,
         coordinator: WorksWithAlexaCoordinator,
@@ -95,6 +97,9 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     write so far has mirrored its directive; ref/08 inferred a bare string
     instead, which is tried second. **Not yet executed against a device.**
     """
+
+    _wwa_operations = frozenset({SET_THERMOSTAT_MODE})
+    _wwa_property = THERMOSTAT_MODE_PROPERTY
 
     def __init__(
         self,

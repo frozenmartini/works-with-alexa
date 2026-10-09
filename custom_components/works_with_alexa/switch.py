@@ -45,6 +45,8 @@ async def async_setup_entry(
 class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
     """One writable toggle feature, or an endpoint's power."""
 
+    _wwa_operations = frozenset({"turnOn", "turnOff"})
+
     def __init__(
         self,
         coordinator: WorksWithAlexaCoordinator,

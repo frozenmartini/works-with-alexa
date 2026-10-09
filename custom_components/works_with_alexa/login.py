@@ -1,20 +1,4 @@
-"""Pure builders for the native Amazon login (the alexa-cookie2 flow).
-
-No I/O: the signin URL, the registration body, and the success test are all
-constructed here and driven by :mod:`.auth_proxy`. That keeps the fiddly,
-easy-to-get-wrong parts under unit test without a browser or a live account.
-
-Where alexa-cookie2 (which logs in successfully) and alexapy (blocked) diverge,
-this follows alexa-cookie2, per ref/04 §1.1 and the Q7 finding on threads/002:
-
-* ``device_id`` is the 92-char form (see :mod:`.fingerprint`), not alexapy's
-  double-encoded 120-char one.
-* the entry point is ``www.<domain>/ap/signin`` with a TLD-specific
-  ``assoc_handle``, not alexapy's hardcoded ``amazon.com/ap/register``.
-
-The surrounding OpenID boilerplate is taken verbatim from alexapy, which agrees
-with alexa-cookie2 on those fields.
-"""
+"""Shared URL and registration payload builders for Amazon browser sign-in."""
 
 from __future__ import annotations
 
@@ -127,38 +111,11 @@ def registration_body(
     }
 
 
-def extract_authorization_code(query: dict[str, Any]) -> str | None:
-    """Read the authorization code out of the ``/ap/maplanding`` redirect query.
-
-    Amazon redirects here with ``openid.oa2.authorization_code`` once login (and
-    any MFA) completes. Absent means login is not yet done.
-    """
-    code = query.get("openid.oa2.authorization_code")
-    return code if isinstance(code, str) and code else None
-
-
-def is_login_complete(path: str, query: dict[str, Any]) -> bool:
-    """Whether a navigation represents a finished login.
-
-    Two success paths (ref/04 §1.1.1): the ``/ap/maplanding`` redirect carrying
-    an authorization code (a fresh login), or a bounce straight to
-    ``/spa/index.html`` (the browser already held a valid Amazon session). Only
-    the first yields a code; the caller must handle a code-less success.
-    """
-    if "/spa/index.html" in path:
-        return True
-    if path.endswith("/ap/maplanding"):
-        return extract_authorization_code(query) is not None
-    return False
-
-
 # Marketplace/app version constants surfaced for callers/tests.
 __all__ = [
     "ALEXA_APP_VERSION",
     "assoc_handle",
     "build_signin_url",
-    "extract_authorization_code",
-    "is_login_complete",
     "register_url",
     "registration_body",
 ]

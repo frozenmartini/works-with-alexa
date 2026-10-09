@@ -113,7 +113,7 @@ class Feature:
     """A single capability of an endpoint."""
 
     name: str
-    instance: str | None
+    instance: str | int | None
     operations: frozenset[str]
     properties: dict[str, Any] = field(default_factory=dict)
     configuration: dict[str, Any] = field(default_factory=dict)
@@ -139,7 +139,7 @@ class Feature:
         """
         if self.friendly_name:
             return self.friendly_name
-        return humanise(self.instance or self.name)
+        return humanise(str(self.instance or self.name))
 
     @property
     def writable(self) -> bool:

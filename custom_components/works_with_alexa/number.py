@@ -77,6 +77,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
     """One writable range feature."""
 
     _attr_mode = NumberMode.BOX
+    _wwa_operations = frozenset({"setRangeValue"})
 
     def __init__(
         self,
@@ -121,6 +122,7 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
     """
 
     _attr_mode = NumberMode.BOX
+    _wwa_operations = frozenset({SET_TARGET_SETPOINT})
     _attr_device_class = NumberDeviceClass.TEMPERATURE
 
     def __init__(
@@ -132,6 +134,7 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
     ) -> None:
         super().__init__(coordinator, endpoint, feature)
         self._prop = prop
+        self._wwa_property = prop
         self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}/{prop}"
         self._attr_name = humanise(prop)
         self._scale = (feature.property_scale(prop) or feature.scale or "CELSIUS").upper()

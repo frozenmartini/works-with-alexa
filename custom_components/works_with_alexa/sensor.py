@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import WorksWithAlexaConfigEntry
 from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
+from .discovery import feature_metadata
 from .models import Endpoint, Feature, sensor_features
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class WorksWithAlexaSensor(CoordinatorEntity[WorksWithAlexaCoordinator], SensorE
         super().__init__(coordinator)
         self._endpoint_id = endpoint.endpoint_id
         self._feature_key = feature.key
+        self._discovery_feature = feature
 
         self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}"
         self._attr_name = feature.label
@@ -118,11 +120,12 @@ class WorksWithAlexaSensor(CoordinatorEntity[WorksWithAlexaCoordinator], SensorE
         return endpoint.live_value(feature)
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any] | None:
-        feature = self._feature
-        if feature is None:
-            return None
-        attrs: dict[str, Any] = {"feature": feature.key}
+    def extra_state_attributes(self) -> dict[str, Any]:
+        feature = self._feature or self._discovery_feature
+        attrs: dict[str, Any] = {
+            "feature": feature.key,
+            "wwa_feature": feature_metadata(feature, writable=False),
+        }
         # Only meaningful where the scale is undeclared; where it is declared the
         # unit is already on the entity itself.
         if feature.unit_of_measure and not feature.scale:

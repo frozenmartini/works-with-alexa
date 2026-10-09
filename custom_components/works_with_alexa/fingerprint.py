@@ -77,27 +77,6 @@ def generate_device_serial() -> str:
     return secrets.token_bytes(_DEVICE_SERIAL_BYTES).hex().upper()
 
 
-def alexa_media_device_serial(instance_id: str, email: str, url: str, index: int) -> str:
-    """Rebuild the device serial ``alexa_media_player`` registered with.
-
-    That integration stores no serial. It recomputes one each run from Home
-    Assistant's instance id, the account's position among its config entries,
-    and a hash of email+url -- so borrowing its refresh token means rebuilding
-    the serial the same way, or Amazon refuses the exchange: the token is bound
-    to the device that registered it.
-
-    Transcribed from ``alexa_media/helpers.py::calculate_uuid``. The result is
-    the low 32 hex digits of the sum, which is why the ``0x`` prefix never
-    survives the slice.
-    """
-    combined = (
-        int(instance_id, 16)
-        + index
-        + int(hashlib.sha256((email.lower() + url.lower()).encode()).hexdigest(), 16)
-    )
-    return hex(combined)[-32:]
-
-
 def derive_device_id(device_serial: str) -> str:
     """The 92-char device id for ``openid.oa2.client_id=device:<deviceId>``.
 

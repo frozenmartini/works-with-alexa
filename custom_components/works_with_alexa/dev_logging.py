@@ -145,11 +145,14 @@ class DrainingQueueListener(QueueListener):
 
 class EvidenceLogging:
     """One integration-wide handler, retained across config entry reloads."""
-    def __init__(self, directory: Path, logger_name: str, source: str = 'home_assistant') -> None:
+    def __init__(self, directory: Path, logger_name: str, source: str = 'home_assistant',
+                 *, filename: str = 'works_with_alexa.jsonl', archive_all: bool = False) -> None:
         self.directory = directory
         self.logger = logging.getLogger(logger_name)
         self.old_level = self.logger.level
         self.source = source
+        self.filename = filename
+        self.archive_all = archive_all
         self.file_handler: RotatingFileHandler | None = None
         self.handler: SafeQueueHandler | None = None
         self.listener: QueueListener | None = None
@@ -158,12 +161,13 @@ class EvidenceLogging:
         if self.listener is not None:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
-        path = self.directory / 'works_with_alexa.jsonl'
+        path = self.directory / self.filename
         path.touch(mode=0o600, exist_ok=True)
         path.chmod(0o600)
-        handler = PrivateRotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
+        handler = PrivateRotatingFileHandler(path, maxBytes=0 if self.archive_all else 5 * 1024 * 1024,
+                                            backupCount=5, encoding='utf-8')
         handler.setFormatter(JsonLineFormatter(self.source))
-        log_queue: queue.Queue = queue.Queue(maxsize=10000)
+        log_queue: queue.Queue = queue.Queue(maxsize=0 if self.archive_all else 10000)
         self.handler = SafeQueueHandler(log_queue)
         self.file_handler = handler
         self.listener = DrainingQueueListener(log_queue, handler)
@@ -210,16 +214,24 @@ async def async_enable_evidence_logging(hass: Any) -> None:
             return
         evidence = EvidenceLogging(directory, __package__)
         await hass.async_add_executor_job(evidence.start)
+        auth_evidence = EvidenceLogging(directory, __package__ + '.auth_watch',
+                                       filename='auth.jsonl', archive_all=True)
+        try:
+            await hass.async_add_executor_job(auth_evidence.start)
+        except OSError:
+            await hass.async_add_executor_job(evidence.stop)
+            raise
     except (OSError, ValueError):
         _LOGGER.warning('Development evidence logging could not be initialized')
         hass.data.pop(_STATE_KEY, None)
         return
-    hass.data[_STATE_KEY] = evidence
+    hass.data[_STATE_KEY] = (evidence, auth_evidence)
     event(_LOGGER, 'logging.started', level=logging.INFO, directory=str(directory))
 
     async def stop_logging(_event: Any) -> None:
         event(_LOGGER, 'logging.stopped', level=logging.INFO)
         await hass.async_add_executor_job(evidence.stop)
+        await hass.async_add_executor_job(auth_evidence.stop)
         hass.data.pop(_STATE_KEY, None)
 
     hass.bus.async_listen_once('homeassistant_stop', stop_logging)

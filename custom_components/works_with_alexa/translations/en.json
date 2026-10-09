@@ -1,73 +1,6 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "Works with Alexa",
-        "description": "Choose how to connect your Amazon account.",
-        "menu_options": {
-          "import_alexa_media": "Borrow the sign-in from Alexa Media Player (recommended)",
-          "import_token": "Use an existing credential bundle",
-          "login_password": "Sign in with email, password and 2FA key (the Alexa Media Player way)",
-          "login": "Sign in to Amazon with a blank form (not working yet)",
-          "login_direct": "Try direct Amazon sign-in (separate experimental token)"
-        }
-      },
-      "import_alexa_media": {
-        "title": "Borrow from Alexa Media Player",
-        "description": "Reuse the Amazon sign-in that Alexa Media Player already holds, with no second sign-in and no new device registration. That integration keeps working; sharing the token does not disturb its session.",
-        "data": {
-          "account": "Alexa Media Player account",
-          "scan_interval": "Polling interval (seconds)"
-        }
-      },
-      "import_token": {
-        "title": "Use an existing credential bundle",
-        "description": "Paste a credential bundle from an account that is already registered. It must contain the refresh token, macDms and device serial. The marketplace below is only used if the bundle does not name one.",
-        "data": {
-          "credentials": "Credential bundle (JSON)",
-          "url": "Amazon marketplace",
-          "scan_interval": "Polling interval (seconds)"
-        }
-      },
-      "login_password": {
-        "title": "Sign in with email, password and 2FA key",
-        "description": "Enter the same details you would give Alexa Media Player. A window then opens on Amazon's own sign-in with your email and password already filled in, and if you also give the authenticator app key from Amazon's 2-step verification, the one-time code is filled in too, so you only click through.\n\nNothing typed here is saved. Once you are signed in only the refresh token is kept, and the password and key are discarded.\n\nTo get the key: on Amazon go to Login & security, 2-step verification, Add new app, then choose \"Can't scan the barcode?\" and copy the 52-character key shown. This path is new and has not yet been tried against a live account.",
-        "data": {
-          "url": "Amazon marketplace",
-          "email": "Amazon email address",
-          "password": "Amazon password",
-          "otp_secret": "Authenticator app key for Amazon 2-step verification (optional)",
-          "hass_url": "Home Assistant URL (as your browser reaches it)",
-          "scan_interval": "Polling interval (seconds)"
-        },
-        "data_description": {
-          "otp_secret": "The 52-character key, for example 35T5 LQSY I5IO 3EFQ LGAJ I6YB JWBY JJPR PYT7 XPPW IDAK SQBJ CVXA. Spaces are fine. Leave empty to type the code yourself.",
-          "hass_url": "The sign-in window is served by Home Assistant at this address, so it must be one your browser can open."
-        }
-      },
-      "proxy_warning": {
-        "title": "Home Assistant cannot reach that URL",
-        "description": "Home Assistant tried to open {hass_url} and could not:\n\n> {error}\n\nThe sign-in window is served from that address, so your browser has to be able to open it. Check the address, or Settings, System, Network, Home Assistant URL. If you are sure your browser can reach it even though the server cannot, tick the box to continue anyway.",
-        "data": {
-          "proxy_warning": "Continue anyway. My browser can reach this URL even though Home Assistant cannot."
-        }
-      },
-      "totp_register": {
-        "title": "Check the one-time code",
-        "description": "**{email} on {url}**\n\nThe authenticator key you gave produces this code right now, valid for another {seconds} seconds:\n\n> **{code}**\n\nCompare it with the code in your authenticator app, or with the one Amazon showed when you added the app. If it matches, tick the box and continue. If it does not, the key was copied wrong: go back and paste it again. Submitting with the box unticked shows a fresh code.",
-        "data": {
-          "registered": "Yes, the code matches"
-        }
-      },
-      "login": {
-        "title": "Sign in to Amazon with a blank form (not working yet)",
-        "description": "This path is unfinished and is not expected to succeed. Amazon answers a new device registration with a challenge whose page will not load through the sign-in relay, so it stops partway. Use one of the other options instead; the one above fills the same form in for you the way Alexa Media Player does. If you want to try this anyway: after you submit, a window opens for Amazon's own sign-in, and the Home Assistant URL below must be the one your browser can reach.",
-        "data": {
-          "url": "Amazon marketplace",
-          "hass_url": "Home Assistant URL (as your browser reaches it)",
-          "scan_interval": "Polling interval (seconds)"
-        }
-      },
       "select_devices": {
         "title": "Choose devices",
         "description": "{count} devices on your Amazon account can be added to Home Assistant. You can change this later without signing in again.",
@@ -87,28 +20,17 @@
           "include_endpoints": "One entity per feature, nothing assembled."
         }
       },
-      "reauth_confirm": {
-        "title": "Re-authenticate with Amazon",
-        "description": "Your stored credentials are no longer accepted. Choose how to sign in again; your existing configuration and devices are kept.",
-        "menu_options": {
-          "import_alexa_media": "Borrow the sign-in from Alexa Media Player (recommended)",
-          "import_token": "Use an existing credential bundle",
-          "login_password": "Sign in with email, password and 2FA key (the Alexa Media Player way)",
-          "login": "Sign in to Amazon with a blank form (not working yet)",
-          "login_direct": "Try direct Amazon sign-in (separate experimental token)"
-        }
-      },
       "login_direct": {
         "title": "Sign in directly on Amazon",
-        "description": "Choose your Amazon marketplace. On the next screen, open Amazon in a separate browser tab and sign in there. Your password and one-time code are entered only on Amazon. The resulting token is saved separately for testing; this does not add an integration or replace your existing credentials. Every successful sign-in is saved as a separate experiment; earlier tokens are kept.",
+        "description": "Choose your Amazon marketplace. On the next screen, open Amazon in a separate browser tab and sign in there. Enter your password and verification code only on Amazon.",
         "data": {
           "url": "Amazon marketplace",
-          "experiment_name": "Experiment name (for example, Incognito with 2FA)"
+          "scan_interval": "Polling interval (seconds)"
         }
       },
       "direct_redirect": {
         "title": "Complete Amazon sign-in",
-        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this Home Assistant form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. When you reach a URL containing `/ap/maplanding`, copy the **full address-bar URL**. A blank or error page there is expected.\n4. Paste that URL below and submit promptly.\n\nThe token is saved separately for a standalone API test. No devices are added and your main integration credentials are kept. If saving fails, retry: credentials already issued are kept for this attempt. If Amazon rejects the sign-in or the code has expired, select **Start a new sign-in** and submit to get a fresh link. Never share the redirect URL.",
+        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. When you reach a URL containing `/ap/maplanding`, copy the full address-bar URL. A blank or error page there is expected.\n4. Paste that URL below and submit promptly.\n\nThe account will be checked before the integration uses these credentials. If verification or saving fails, retry without starting another sign-in. Select Start a new sign-in if Amazon rejects the authorization code. Never share the redirect URL.",
         "data": {
           "redirect_url": "Full Amazon redirect URL",
           "restart_login": "Start a new sign-in"
@@ -123,25 +45,27 @@
         "data_description": {
           "include_scenes": "One button per scene. Scene selection is separate from devices."
         }
+      },
+      "confirm_legacy_account": {
+        "title": "Confirm the account for this older entry",
+        "description": "Amazon verified the signed-in account as {account}. This older entry did not record its account identity, and the previous sign-in can no longer verify it. Confirm that this is the account originally used for this entry. Your existing entry, devices and scenes will be kept. Cancel if this is a different account.",
+        "data": {
+          "confirm_account": "This is the Amazon account originally used for this entry"
+        }
       }
     },
     "error": {
-      "login_failed": "Login did not complete. Make sure you finished Amazon's sign-in, and try from a browser not already signed in to Amazon. If you gave an authenticator key, check the code it produces matches your app.",
       "cannot_connect": "Could not reach Amazon. Check your connection and try again.",
-      "invalid_bundle": "That is not a usable credential bundle. It must be JSON containing refreshToken, macDms and deviceSerial.",
       "invalid_auth": "Amazon rejected those credentials. The refresh token may have been revoked.",
-      "2fa_key_invalid": "That is not a valid authenticator key. It should be the 52-character key Amazon shows when you add an authenticator app: letters A to Z and digits 2 to 7, spaces allowed.",
       "invalid_redirect": "Paste the full HTTPS URL from the final /ap/maplanding page on the marketplace you selected, including its authorization code.",
       "direct_login_failed": "Amazon rejected the sign-in or registration. Select Start a new sign-in and complete Amazon sign-in again.",
-      "experiment_save_failed": "Could not save the experimental credentials. Check Home Assistant storage permissions and retry without starting a new sign-in."
+      "signin_save_failed": "Could not save the sign-in. Check Home Assistant storage permissions and retry without starting a new sign-in.",
+      "account_confirmation_required": "Confirm the account to finish recovery, or cancel to keep the existing sign-in."
     },
     "abort": {
       "already_configured": "This Amazon account is already set up.",
-      "proxy_missing": "The login session was lost. Start again.",
-      "no_alexa_media": "No Alexa Media Player account with a stored sign-in was found.",
       "reauth_successful": "Re-authentication was successful.",
-      "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for.",
-      "experiment_saved": "Experimental token saved separately as {experiment_id}. Earlier experiments and your existing integration credentials were kept. No devices were added. The token is ready for a standalone API test."
+      "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for."
     }
   },
   "options": {
@@ -150,24 +74,14 @@
         "title": "Works with Alexa options",
         "description": "Add or remove devices and scenes without signing in again. Saved changes reload this integration.",
         "menu_options": {
-          "devices": "Manage devices \u2014 add, edit or remove",
-          "scenes": "Manage scenes",
-          "polling": "Polling interval"
+          "devices": "Add, edit or remove devices",
+          "polling": "Polling interval",
+          "sign_in": "Amazon sign-in"
         }
       },
       "devices": {
-        "title": "Devices",
-        "description": "{count} devices are available. Removing a device deletes its entities.",
-        "menu_options": {
-          "devices_keep": "Leave devices as they are",
-          "devices_pick": "Choose devices individually",
-          "devices_all": "Add all devices",
-          "devices_none": "Remove all devices"
-        }
-      },
-      "devices_pick": {
         "title": "Choose devices",
-        "description": "Tick each of the {count} devices you want in Home Assistant: one entity per Alexa feature (switch, select, number, sensor, lock). Nothing is assembled here; build whole devices from these entities in Kitbash. Unticking one deletes its entities. Scene selection follows on a separate screen.",
+        "description": "Choose from {count} devices. Current selections are checked. Click Next to choose scenes. Unchecking a device removes its Home Assistant entities when you save.",
         "data": {
           "include_endpoints": "Devices"
         },
@@ -177,7 +91,7 @@
       },
       "scenes": {
         "title": "Scenes",
-        "description": "Choose from {count} Alexa scenes. All scenes start unselected. Selected scenes become buttons grouped in one Scenes card. Pressing a button activates that scene. Removing a selection deletes its button.",
+        "description": "Choose from {count} Alexa scenes. Current selections are checked. Selected scenes appear as buttons under Scenes. Unchecking a scene removes its button. Submit saves your device and scene selections.",
         "data": {
           "include_scenes": "Scenes"
         },
@@ -195,6 +109,9 @@
     },
     "error": {
       "entry_unavailable": "The integration inventory is unavailable. Load or reload the integration, then try again. Your saved selections are kept."
+    },
+    "abort": {
+      "reauth_started": "Open the Works with Alexa reauthentication form to sign in on Amazon."
     }
   }
 }

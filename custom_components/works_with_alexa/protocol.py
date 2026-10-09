@@ -27,7 +27,12 @@ class WorksWithAlexaError(Exception):
 
 
 class AuthError(WorksWithAlexaError):
-    """Credentials are no longer usable. Maps to ConfigEntryAuthFailed."""
+    """An auth layer failed; this need not mean the root token was rejected."""
+
+    def __init__(self, message: str, *, stage: str = "session", root_token_rejected: bool = False) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.root_token_rejected = root_token_rejected
 
 
 class ApiConnectionError(WorksWithAlexaError):

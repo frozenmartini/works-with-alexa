@@ -5,9 +5,6 @@
     "@frozenmartini"
   ],
   "config_flow": true,
-  "dependencies": [
-    "http"
-  ],
   "documentation": "https://github.com/frozenmartini/works-with-alexa",
   "integration_type": "hub",
   "iot_class": "cloud_polling",

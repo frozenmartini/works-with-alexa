@@ -21,6 +21,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AmazonAlexaSession
+from .auth_watch import auth_event
 from .const import (
     CONF_INCLUDE_ENDPOINTS,
     CONF_INCLUDE_SCENES,
@@ -55,6 +56,7 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             ),
         )
         self.session = session
+        self.configured_options = dict(entry.options)
         self.scenes: dict[str, AlexaScene] = {}
         self.scenes_available = False
 
@@ -101,6 +103,8 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
                   scenes_available=self.scenes_available)
             return endpoints
         except AuthError as err:
+            auth_event("reauth.required", level=logging.ERROR, entry_id=self.config_entry.entry_id,
+                       stage=err.stage, root_token_rejected=err.root_token_rejected, trigger="poll")
             event(_LOGGER, "poll.failed", level=logging.ERROR, error_type=type(err).__name__)
             # Never discard the stored credentials -- hand off to HA's reauth
             # flow and let it decide (ref/10).

@@ -21,6 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import event
+from .discovery import feature_metadata
 from .models import Endpoint, Feature
 from .protocol import WorksWithAlexaError
 
@@ -64,6 +65,8 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
     """One feature of one endpoint."""
 
     _attr_has_entity_name = True
+    _wwa_operations: frozenset[str] = frozenset()
+    _wwa_property: str | None = None
 
     def __init__(
         self,
@@ -76,6 +79,7 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         self._feature_key = feature.key
         self._feature_name = feature.name
         self._instance = feature.instance
+        self._discovery_feature = feature
         # feature key -> latest pending state
         self._optimistic: dict[str, _OptimisticState] = {}
         self._cancel_optimistic_expiry: Callable[[], None] | None = None
@@ -105,8 +109,8 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         return super().available and self.feature is not None
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Amazon's reachability flag, as information rather than availability.
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Discovery metadata and reachability, independent of availability.
 
         ``connectivity`` is the signal behind the Alexa app's "device is
         unresponsive", but on 2026-09-13 both Dreo fans reported UNREACHABLE
@@ -115,9 +119,17 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         only produces a failed command with a clear error.
         """
         endpoint = self.endpoint
-        if endpoint is None or endpoint.reachable is None:
-            return None
-        return {"reachable": endpoint.reachable}
+        feature = self.feature or self._discovery_feature
+        attrs: dict[str, Any] = {
+            "wwa_feature": feature_metadata(
+                feature,
+                writable=bool(self._wwa_operations) and self._wwa_operations <= feature.operations,
+                prop=self._wwa_property,
+            )
+        }
+        if endpoint is not None and endpoint.reachable is not None:
+            attrs["reachable"] = endpoint.reachable
+        return attrs
 
     def _reported(self, key: str) -> Any:
         """What the endpoint currently reports for an optimistic key.

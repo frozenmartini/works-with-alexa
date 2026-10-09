@@ -4,7 +4,7 @@ A Home Assistant custom integration for devices that only exist in Alexa: things
 native Home Assistant integration, reachable only through Amazon's **unofficial** Alexa
 account API (the one the Alexa app uses, not the official Smart Home Skill API).
 
-It signs in as the iOS Alexa app, keeps only a refresh token, and exposes supported device
+It signs in as the iOS Alexa app, keeps device-registration credentials, and exposes supported device
 features Alexa reports as a **raw** Home Assistant entity: one entity per feature, named as
 Alexa names it, with Alexa's own options and bounds. Assembling those raw entities into
 whole devices is left to you, or to its companion integration, `kitbash`.
@@ -32,7 +32,7 @@ The built Window Fan `fan` entity that earlier versions carried was removed on 2
 Only endpoints with supported capabilities are offered, regardless of category
 or manufacturer. An application endpoint with power controls can be selectable;
 an Echo Show with a temperature value can yield a sensor. Scenes have a separate
-picker during setup and **Manage scenes** in Options. They start entirely
+picker during setup and follow the device picker in Options. They start entirely
 unselected, including on existing installations. Selected scenes appear as individual `button` entities grouped
 under a single **Scenes** device card. Pressing a button activates its Alexa scene;
 it has no on/off state. Adding all devices does not select any scenes.
@@ -41,9 +41,10 @@ Every raw endpoint entity carries a `reachable` attribute (Alexa's own connectiv
 is off, its writable numbers and selects read unknown rather than the `0` Alexa reports.
 
 After setup, open the entry's **Options** (gear) in Settings → Devices & services →
-Works with Alexa. **Manage devices** lets you add, change or remove selections;
-**Manage scenes** edits scene buttons independently. **Polling interval** changes
-only the interval. Saving reloads this integration without signing in again.
+Works with Alexa. **Add, edit or remove devices** opens the device checkboxes,
+with current selections checked. Click **Next** for the scene checkboxes, then
+submit to save both selections. **Polling interval** changes only the interval.
+Saving reloads this integration without signing in again.
 
 Development installs can write rotating JSONL logs when their private `.dev-install`
 marker specifies `evidence_log_dir`, relative to HA's configuration directory.
@@ -55,33 +56,36 @@ marker keep Home Assistant's standard logging behavior.
 
 ## Signing in
 
-Four connection paths and a separate login experiment, offered on the first screen:
+Sign in directly on Amazon in your own browser:
 
-1. **Borrow from Alexa Media Player** — if that integration is installed, reuse its refresh
-   token. Nothing to type. The most reliable path today.
-2. **Paste a credential bundle** — the JSON that `alexa-cookie2` or similar tools produce.
-3. **Direct Amazon sign-in (experimental)** — open Amazon in your own browser, finish
-   sign-in and any verification, then paste the full `/ap/maplanding` redirect URL
-   into Home Assistant. For this trial, credentials are saved separately in
-   `.storage/works_with_alexa_direct_experiment_<experiment-id>` with a name;
-   earlier experiments are kept and no entry is created or changed.
-   Your password and one-time code stay on Amazon. This follows
-   the enrollment approach demonstrated by [alexapy-secure](https://github.com/superbeetle1973/alexapy-secure);
-   recognized-browser enrollment, incognito enrollment with phone 2FA, independent
-   API probes, and a later refresh-only call all succeeded live. This option
-   remains an isolated experiment rather than a normal entry sign-in.
-4. **Email, password and 2FA key** — the legacy relay flow: Amazon's pages open
-   through Home Assistant with your details filled in, including the one-time code generated
-   from your authenticator-app key. Nothing you type is stored. Fresh registration
-   through this path has encountered Amazon risk challenges; borrowing an existing
-   token does not demonstrate that fresh registration will succeed.
-5. **Blank sign-in** — Amazon's pages with nothing filled in. Currently blocked by Amazon's
-   risk check on fresh sessions; kept for when that changes.
+1. Choose your Amazon marketplace in Home Assistant.
+2. Open the Amazon sign-in link in a separate browser tab and complete sign-in
+   and any verification there. Passwords and verification codes stay on Amazon.
+3. Copy the full `/ap/maplanding` redirect URL into Home Assistant and submit.
+   A blank or error page at that address is expected.
+4. After your account is verified, choose the devices and scenes to add.
+
+To replace a sign-in, use **Options → Amazon sign-in**. Reauthentication verifies
+that you signed in to the same account, retains device and scene selections, and
+reuses the entry's device serial. If verification fails temporarily, retry the
+form without starting another sign-in.
+
+Older entries may have used a device serial as their account identifier. The
+integration learns their account identity while the old sign-in still works,
+keeping the existing entry and selections. If that sign-in has expired before
+an identity was recorded, recovery shows the verified Amazon account and asks
+you to explicitly confirm it is the account originally used for the entry.
+Cancel if it is a different account. Known account mismatches are always rejected.
 
 Connection entries store only the refresh token, `macDms` and a device serial.
 Access tokens, cookies and the CSRF token are rebuilt on every start and never saved. An
 authentication failure triggers Home Assistant's reauthentication flow; stored credentials are
 never deleted on an error.
+
+Credential rotation belongs to the session that started it: a late refresh from
+an older session cannot overwrite a completed replacement sign-in. Scheduled
+renewal retries recoverable cookie/CSRF failures after 60 seconds; only confirmed
+root-credential rejection stops the watcher and requests interactive sign-in.
 
 ## Capability matching
 
@@ -111,6 +115,66 @@ and report the request acknowledgement or failure.
 
 One account-wide endpoint query plus paginated scene discovery runs per polling
 interval (default 60 seconds, minimum 15 seconds).
+
+## Optional discovery contract
+
+Raw endpoint entities expose a namespaced `wwa_feature` dictionary in their
+Home Assistant state attributes. Kitbash and other consumers can discover these
+entities through HA's entity/device registries and state metadata. The integrations
+remain independent: Kitbash does not need to import Works with Alexa or call Alexa.
+This metadata is optional for consumers; ignore unfamiliar fields and do not assume
+older installations or other integrations provide it. Scene buttons are separate
+account automations and do not carry endpoint feature metadata.
+
+| Field | Meaning |
+|---|---|
+| `key` | Existing stable Alexa feature key, such as `power`, `mode/1`, or `range/Fan.Speed` |
+| `type` | Original feature name/type, such as `power`, `range`, `mode`, `toggle`, `thermostat`, or `temperatureSensor` |
+| `instance` | Original instance (including numeric values), or `null` |
+| `label` | Alexa's feature label, with the existing readable fallback when absent; unaffected by HA entity renaming |
+| `operations` | Advertised operation names, as a sorted list; these may include operations the entity does not implement |
+| `writable` | Whether this specific entity supports writing with its advertised commands; always `false` for sensors, including action-status sensors |
+| `ordered` | `true` for explicitly ORDERED mode features, `false` for explicitly UNORDERED ones; `null` when unknown or not a mode feature |
+| `property` | Thermostat child property (`targetSetpoint`, `lowerSetpoint`, `upperSetpoint`, or `thermostatMode`); `null` otherwise |
+| `role` | Optional semantic hint, published only when supported by the capability, original label, or semantic instance; omitted when uncertain or conflicting |
+
+For example, an oscillation-angle number can publish:
+
+```json
+{
+  "wwa_feature": {
+    "key": "range/Fan.OscillationAngle",
+    "type": "range",
+    "instance": "Fan.OscillationAngle",
+    "label": "Oscillation Angle",
+    "operations": ["adjustRangeValue", "setRangeValue"],
+    "writable": true,
+    "ordered": null,
+    "property": null,
+    "role": "oscillation_angle"
+  }
+}
+```
+
+Hints include `power`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
+`mode`, `temperature`, `setpoint`, `heating`, `cooling`, `lock`, `contact`, `light`,
+and `cover`. Manufacturer, model, device name/category, numeric instances and
+select option labels do not determine roles. An ordered mode alone does not
+establish speed, and an unordered mode is not a speed scale. A range measuring
+oscillation angle is distinct from an oscillation on/off toggle.
+
+Thermostat children share their parent's feature `key` and `label`, with
+`property` distinguishing them. Setpoint numbers carry `role: "setpoint"`;
+current-temperature sensors carry `role: "temperature"`. A whole read-only
+thermostat feature has no assumed temperature role. Consumers should identify
+an entity through the HA registry and use `property` to distinguish thermostat
+children, rather than treating the feature key alone as an entity identifier.
+
+The dictionary merges with existing attributes such as `reachable`, `feature`,
+and `reported_unit`. It contains no credentials or raw account payloads. It does
+not change entity unique IDs, device grouping, select labels, numeric bounds,
+units, or commands. If an endpoint disappears, metadata falls back to the feature
+captured at entity creation; consumers must also check HA availability before writing.
 
 ## What is verified
 
@@ -143,7 +207,7 @@ changes before release. No Python requirements beyond Home Assistant itself.
 
 ## Development
 
-Pure logic (parsing, classification, protocol handling, TOTP) carries no Home Assistant
+Pure logic (parsing, classification, protocol handling, registration) carries no Home Assistant
 imports, so it is testable with the standard library alone.
 
 `features.py` is the single place the feature-to-entity rules live. Change the rules there and

@@ -1,95 +1,53 @@
-"""Config and options flow for Works with Alexa.
-
-The login happens through a local relay the user completes Amazon's real sign-in
-through -- MFA and CAPTCHA included -- because a scripted credential POST is not
-accepted. The relay's request handler is mounted on Home Assistant's own web
-server (no separate port), and Amazon's final redirect bounces the browser back
-to a callback view that resumes this flow.
-
-Structure follows the proven ``alexa_media`` flow; the difference that matters is
-:class:`~.auth_proxy.LoginRelay`, our own same-origin rewriting proxy driven with the correct
-device fingerprint instead of alexapy's blocked one.
-
-Two sign-in forms feed that relay. ``login`` hands the user a blank Amazon page;
-``login_password`` takes email, password and the 2SV authenticator key up front
-and has the relay fill them in, which is how ``alexa_media`` drives the same
-registration. The import paths skip the relay entirely.
-"""
+"""Browser sign-in and device options for Works with Alexa."""
 
 from __future__ import annotations
 
-import datetime
-import json
 import logging
 from typing import Any
-from uuid import uuid4
 
 import aiohttp
 import voluptuous as vol
-from aiohttp import web
-from aiohttp.web_exceptions import HTTPBadRequest
-from yarl import URL
 
-from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import UnknownFlow
-from homeassistant.exceptions import Unauthorized
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
-from homeassistant.helpers.storage import Store
 
-from .auth_proxy import LoginRelay
+from .auth_watch import auth_event, fingerprint
 from .enrollment import DirectEnrollment, InvalidRedirect
 from .dev_logging import async_enable_evidence_logging, event
 from .const import (
-    ALEXA_MEDIA_DOMAIN,
-    ALEXA_MEDIA_OAUTH,
-    AUTH_CALLBACK_NAME,
-    AUTH_CALLBACK_PATH,
-    AUTH_PROXY_NAME,
-    AUTH_PROXY_PATH,
-    CONF_ACCOUNT,
-    CONF_CREDENTIALS,
-    CONF_DEVICE_SERIAL,
-    CONF_DIRECTED_ID,
-    CONF_HASS_URL,
-    CONF_INCLUDE_ENDPOINTS,
-    CONF_INCLUDE_SCENES,
-    CONF_MAC_DMS,
-    CONF_OTP_SECRET,
-    CONF_PROXY_WARNING,
-    CONF_REFRESH_TOKEN,
-    CONF_SCAN_INTERVAL,
-    CONF_TOTP_REGISTER,
-    CONF_URL,
-    DEFAULT_DOMAIN,
-    DEFAULT_HASS_URL,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    HASS_URL_CHECK_TIMEOUT,
-    MIN_SCAN_INTERVAL,
-    SUPPORTED_DOMAINS,
+    CONF_DEVICE_SERIAL, CONF_DIRECTED_ID, CONF_INCLUDE_ENDPOINTS, CONF_INCLUDE_SCENES,
+    CONF_MAC_DMS, CONF_REFRESH_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_DOMAIN,
+    DEFAULT_SCAN_INTERVAL, DOMAIN, MIN_SCAN_INTERVAL, SUPPORTED_DOMAINS,
 )
-from .fingerprint import alexa_media_device_serial
 from .models import produces_entities, is_controllable
 from .scenes import scene_choices
-from .protocol import AuthError, WorksWithAlexaError
-from .totp import InvalidSecret, normalize_secret, seconds_remaining, totp_code
+from .protocol import ApiConnectionError, AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def checkbox_selector(choices: dict[str, str]) -> SelectSelector:
+    """Show all device/scene choices as a visible list of checkboxes."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[{"value": value, "label": label} for value, label in choices.items()],
+            multiple=True,
+            mode=SelectSelectorMode.LIST,
+        )
+    )
 
 
 def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
@@ -124,128 +82,64 @@ def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
     return {endpoint_id: label for _, endpoint_id, label in sorted(labelled)}
 
 
-def _parse_bundle(raw: str) -> tuple[dict[str, Any], str | None]:
-    """Read a credential bundle into the shape :meth:`_async_verify` expects.
-
-    Accepts either the alexa-cookie2 wrapper (``{"cookieData": {...}}``) or the
-    inner object on its own. Returns the credentials plus the marketplace the
-    bundle was minted against, which is authoritative when present: the cookies
-    are only valid for the domain that issued them (ref/00 §2).
-
-    Raises ValueError with a reason that is safe to log -- no field values.
-    """
-    try:
-        parsed = json.loads(raw)
-    except ValueError as err:
-        raise ValueError(f"not valid JSON: {err}") from err
-    if not isinstance(parsed, dict):
-        raise ValueError("top level is not an object")
-
-    data = parsed.get("cookieData", parsed)
-    if not isinstance(data, dict):
-        raise ValueError("cookieData is not an object")
-
-    missing = [
-        key
-        for key in ("refreshToken", "macDms", "deviceSerial")
-        if not data.get(key)
-    ]
-    if missing:
-        raise ValueError(f"missing {', '.join(missing)}")
-    if not isinstance(data["macDms"], dict):
-        raise ValueError("macDms is not an object")
-
-    domain = data.get("amazonPage")
-    if domain not in SUPPORTED_DOMAINS:
-        domain = None
-
-    credentials = {
-        "refresh_token": data["refreshToken"],
-        "device_serial": data["deviceSerial"],
-        "mac_dms": data["macDms"],
-    }
-    return credentials, domain
-
-
-# The device fingerprint is persisted here so it is reused across login attempts
-# rather than churning (threads/002 Q9). Not secret, but device-identifying.
-FINGERPRINT_STORAGE_VERSION = 1
-FINGERPRINT_STORAGE_KEY = f"{DOMAIN}_fingerprint"
-
-
 class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the login/registration flow."""
 
     VERSION = 1
 
-    # Class-level so a second flow reuses one relay rather than double-mounting.
-    proxy: LoginRelay | None = None
-    proxy_view: "WorksWithAlexaProxyView | None" = None
-
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
-        self._fingerprint: dict[str, str] | None = None
         self._credentials: dict[str, Any] = {}
         self._email: str | None = None
         self._choices: dict[str, str] = {}
         self._scene_choices: dict[str, str] = {}
-        # Which sign-in form started the relay, so a failure returns to it.
-        self._login_step: str = "login"
-        # What the relay types into Amazon's pages on the alexa_media_player-
-        # style path. Flow memory only: never written to the entry or logged.
-        self._autofill: dict[str, str] | None = None
-        self._hass_url_error: str | None = None
         self._direct_enrollment: DirectEnrollment | None = None
         self._direct_credentials: dict[str, Any] | None = None
-        self._direct_experiment_id: str | None = None
-        self._direct_experiment_name = "Browser sign-in"
+        self._legacy_reauth: tuple[dict[str, Any], str, dict[str, Any]] | None = None
+        self._legacy_confirmed = False
 
     # --- entry point --------------------------------------------------------
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Offer adoption of existing credentials, or a fresh Amazon sign-in."""
+        """Start browser sign-in."""
         await async_enable_evidence_logging(self.hass)
         event(_LOGGER, "config.started")
-        return self.async_show_menu(step_id="user", menu_options=self._menu_options())
-
-    def _menu_options(self) -> list[str]:
-        """Shared setup/reauth menu, including an isolated direct-login trial."""
-        options = ["import_token", "login_direct", "login_password", "login"]
-        if self._alexa_media_accounts():
-            # Only worth offering when there is actually something to borrow --
-            # and it is the path that works, so it leads.
-            options.insert(0, "import_alexa_media")
-        return options
+        return await self.async_step_login_direct(user_input)
 
     async def async_step_login_direct(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose the marketplace before opening Amazon directly in a browser."""
         if user_input is not None:
+            self._legacy_reauth = None
+            self._legacy_confirmed = False
             self._config[CONF_URL] = user_input[CONF_URL]
-            self._direct_credentials = None
-            self._direct_experiment_id = uuid4().hex
-            self._direct_experiment_name = (
-                user_input.get("experiment_name", "Browser sign-in").strip()[:80]
-                or "Browser sign-in"
+            self._config[CONF_SCAN_INTERVAL] = user_input.get(
+                CONF_SCAN_INTERVAL, self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
             )
+            self._direct_credentials = None
             self._direct_enrollment = DirectEnrollment(user_input[CONF_URL])
+            if self.source == SOURCE_REAUTH:
+                self._direct_enrollment.use_device_serial(self._get_reauth_entry().data[CONF_DEVICE_SERIAL])
+            auth_event("signin.started", method="direct_browser", interactive=True,
+                       mfa_observed="unknown")
             return await self.async_step_direct_redirect()
         return self.async_show_form(
             step_id="login_direct",
             data_schema=vol.Schema({
                 vol.Required(CONF_URL, default=self._config.get(CONF_URL, DEFAULT_DOMAIN)):
                     vol.In(SUPPORTED_DOMAINS),
-                vol.Optional("experiment_name", default="Browser sign-in"): str,
+                vol.Optional(CONF_SCAN_INTERVAL, default=self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)):
+                    vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
             }),
         )
 
     async def async_step_direct_redirect(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Save experimental credentials separately, without changing any entry."""
+        """Register once, then verify and use the signed-in account."""
         enrollment = self._direct_enrollment
         if enrollment is None:
             return await self.async_step_login_direct()
@@ -268,35 +162,18 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
                         )},
                     ) as session:
                         self._direct_credentials = await enrollment.async_register(session, code)
-                # This experiment never reaches _async_session or _async_finalize:
-                # neither the live cookie jar nor the main entry is touched.
-                # Retain issued credentials on a storage failure so retrying does
-                # not spend the single-use authorization code a second time.
-                await Store(
-                    self.hass, 1,
-                    f"{DOMAIN}_direct_experiment_{self._direct_experiment_id}",
-                    private=True,
-                ).async_save({
-                    **self._direct_credentials,
-                    CONF_URL: enrollment.domain,
-                    "experiment_name": self._direct_experiment_name,
-                    "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                })
+                return await self._async_complete_browser_signin(user_input)
             except InvalidRedirect:
                 errors["redirect_url"] = "invalid_redirect"
             except AuthError:
+                auth_event("signin.failed", level=logging.ERROR, stage="enrollment_or_verification")
                 errors["base"] = "direct_login_failed"
             except (WorksWithAlexaError, aiohttp.ClientError, TimeoutError):
+                auth_event("signin.retry_required", level=logging.WARNING)
                 errors["base"] = "cannot_connect"
             except OSError:
-                errors["base"] = "experiment_save_failed"
-            else:
-                self._direct_enrollment = None
-                self._direct_credentials = None
-                return self.async_abort(
-                    reason="experiment_saved",
-                    description_placeholders={"experiment_id": self._direct_experiment_id},
-                )
+                auth_event("signin.save_failed", level=logging.ERROR)
+                errors["base"] = "signin_save_failed"
         return self.async_show_form(
             step_id="direct_redirect",
             data_schema=vol.Schema({
@@ -309,469 +186,18 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    def _default_hass_url(self) -> str:
-        """This instance's own URL, for the browser to reach the relay on."""
-        try:
-            return get_url(self.hass, allow_external=False)
-        except NoURLAvailableError:
-            return DEFAULT_HASS_URL
-
-    def _login_schema(self) -> vol.Schema:
-        """The blank sign-in: marketplace, the URL the browser reaches, polling."""
-        return vol.Schema(
-            {
-                vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
-                    SUPPORTED_DOMAINS
-                ),
-                vol.Required(CONF_HASS_URL, default=self._default_hass_url()): str,
-                vol.Required(
-                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
-        )
-
-    def _password_schema(self) -> vol.Schema:
-        """alexa_media_player's form: the same fields plus the credentials."""
-        return vol.Schema(
-            {
-                vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
-                    SUPPORTED_DOMAINS
-                ),
-                vol.Required(CONF_EMAIL): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.EMAIL, autocomplete="username"
-                    )
-                ),
-                vol.Required(CONF_PASSWORD): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.PASSWORD,
-                        autocomplete="current-password",
-                    )
-                ),
-                vol.Optional(CONF_OTP_SECRET): str,
-                vol.Required(CONF_HASS_URL, default=self._default_hass_url()): str,
-                vol.Required(
-                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
-        )
-
-    def _show_login_form(
-        self,
-        step_id: str,
-        *,
-        suggested: dict[str, Any] | None = None,
-        errors: dict[str, str] | None = None,
-    ) -> ConfigFlowResult:
-        """Render one of the two sign-in forms, prefilled but not defaulted.
-
-        Suggested values keep a required field required: an empty email or
-        password is refused by the frontend rather than sent through.
-        """
-        schema = (
-            self._password_schema()
-            if step_id == "login_password"
-            else self._login_schema()
-        )
-        return self.async_show_form(
-            step_id=step_id,
-            data_schema=self.add_suggested_values_to_schema(schema, suggested),
-            errors=errors,
-        )
-
-    async def async_step_login(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the marketplace domain and the URL the browser will reach."""
-        self._login_step = "login"
-        self._autofill = None
-        if user_input is not None:
-            self._config[CONF_URL] = user_input[CONF_URL]
-            self._config[CONF_HASS_URL] = user_input[CONF_HASS_URL].rstrip("/")
-            self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
-            return await self.async_step_start_proxy()
-        return self._show_login_form("login", suggested=self._config)
-
-    # --- sign in the alexa_media_player way ---------------------------------
-
-    async def async_step_login_password(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Take the credentials up front and have the relay type them in.
-
-        The registration is the same one ``login`` performs, through the same
-        relay; what changes is that Amazon's pages arrive with the email,
-        password and -- given the 2SV authenticator key -- the one-time code
-        already filled in, so the user only clicks through. That is how
-        alexa_media_player signs in, and it is the flow known to complete.
-
-        The credentials live in this flow's memory and go no further: the entry
-        keeps the refresh token, as on every other path, never a password.
-        """
-        self._login_step = "login_password"
-        if user_input is None:
-            return self._show_login_form("login_password", suggested=self._config)
-
-        errors: dict[str, str] = {}
-        secret = ""
-        if raw := (user_input.get(CONF_OTP_SECRET) or "").strip():
-            try:
-                secret = normalize_secret(raw)
-            except InvalidSecret:
-                errors[CONF_OTP_SECRET] = "2fa_key_invalid"
-        if errors:
-            return self._show_login_form(
-                "login_password", suggested=user_input, errors=errors
-            )
-
-        self._config[CONF_URL] = user_input[CONF_URL]
-        self._config[CONF_HASS_URL] = user_input[CONF_HASS_URL].rstrip("/")
-        self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
-        self._autofill = {
-            CONF_EMAIL: user_input[CONF_EMAIL].strip(),
-            CONF_PASSWORD: user_input[CONF_PASSWORD],
-            CONF_OTP_SECRET: secret,
-        }
-
-        # alexa_media_player checks that Home Assistant can fetch the URL the
-        # browser is about to be sent to, and lets the user override a failure.
-        # A wrong URL is the commonest way that flow goes nowhere, so keep it.
-        self._hass_url_error = await self._async_hass_url_error(
-            self._config[CONF_HASS_URL]
-        )
-        if self._hass_url_error is not None:
-            return await self.async_step_proxy_warning()
-        return await self._async_after_url_check()
-
-    async def _async_hass_url_error(self, hass_url: str) -> str | None:
-        """Why Home Assistant itself cannot fetch ``hass_url``; None if it can."""
-        session = async_get_clientsession(self.hass)
-        try:
-            async with session.get(
-                hass_url, timeout=aiohttp.ClientTimeout(total=HASS_URL_CHECK_TIMEOUT)
-            ) as response:
-                if response.status < 400:
-                    return None
-                return f"HTTP {response.status}"
-        except (aiohttp.ClientError, TimeoutError) as err:
-            return str(err) or type(err).__name__
-
-    async def async_step_proxy_warning(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Home Assistant could not reach the URL given for the relay.
-
-        Say so and let the user continue anyway, as alexa_media_player does:
-        the browser's view of the network is the one that matters, and it can
-        differ from the server's (a hostname only the LAN resolves, a
-        certificate only the browser trusts).
-        """
-        if user_input is None:
-            return self.async_show_form(
-                step_id="proxy_warning",
-                data_schema=vol.Schema(
-                    {vol.Optional(CONF_PROXY_WARNING, default=False): bool}
-                ),
-                description_placeholders={
-                    "hass_url": self._config[CONF_HASS_URL],
-                    "error": self._hass_url_error or "",
-                },
-            )
-        if not user_input.get(CONF_PROXY_WARNING):
-            # Back to the form with everything still filled in.
-            return self._show_login_form(
-                "login_password", suggested={**self._config, **(self._autofill or {})}
-            )
-        return await self._async_after_url_check()
-
-    async def _async_after_url_check(self) -> ConfigFlowResult:
-        """Confirm the 2SV code when there is a key to make one from, else go."""
-        if self._autofill and self._autofill.get(CONF_OTP_SECRET):
-            return await self.async_step_totp_register()
-        return await self.async_step_start_proxy()
-
-    async def async_step_totp_register(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Show the code the key produces, to be checked against Amazon's.
-
-        A key copied wrong still decodes and still yields plausible six-digit
-        codes; only comparing one with the authenticator app catches that
-        before the sign-in fails on it. Same step and semantics as
-        alexa_media_player: unticked shows a fresh code, ticked proceeds.
-        """
-        if user_input is not None and user_input.get(CONF_TOTP_REGISTER):
-            return await self.async_step_start_proxy()
-        assert self._autofill is not None
-        return self.async_show_form(
-            step_id="totp_register",
-            data_schema=vol.Schema(
-                {vol.Optional(CONF_TOTP_REGISTER, default=False): bool}
-            ),
-            description_placeholders={
-                "email": self._autofill[CONF_EMAIL],
-                "url": self._config[CONF_URL],
-                "code": totp_code(self._autofill[CONF_OTP_SECRET]),
-                "seconds": str(seconds_remaining()),
-            },
-        )
-
-    def _relay_autofill(self) -> dict[str, Any] | None:
-        """What the relay types into Amazon's forms, keyed by input name.
-
-        The one-time code is a callable, evaluated when the 2SV page is actually
-        served. alexapy's proxy generates it once when the form is submitted,
-        which leaves it stale by the time the user has clicked past the
-        password page; generating it on demand costs nothing.
-        """
-        if not self._autofill:
-            return None
-        values: dict[str, Any] = {
-            "email": self._autofill[CONF_EMAIL],
-            "password": self._autofill[CONF_PASSWORD],
-        }
-        if secret := self._autofill.get(CONF_OTP_SECRET):
-            values["otpCode"] = lambda: totp_code(secret)
-        return values
-
-    # --- credential import --------------------------------------------------
-
-    async def async_step_import_token(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Adopt an account from an already-minted credential bundle.
-
-        The refresh token is the durable credential; the access token, cookies
-        and CSRF are rebuilt from it on every start (ref/10). So an account
-        registered elsewhere can be adopted here without a second device
-        registration -- and without the sign-in relay, which is what makes this
-        the safe path when Amazon is challenging fresh registrations.
-        """
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                credentials, bundle_domain = _parse_bundle(
-                    user_input[CONF_CREDENTIALS]
-                )
-            except ValueError as err:
-                _LOGGER.warning("Credential bundle rejected: %s", err)
-                errors["base"] = "invalid_bundle"
-            else:
-                self._config[CONF_URL] = bundle_domain or user_input[CONF_URL]
-                self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
-                # Unlike the login path there is no relay handshake to prove the
-                # credentials work, so exercise them once here rather than
-                # creating an entry that can only fail at setup.
-                try:
-                    email = await self._async_verify(credentials)
-                except AuthError as err:
-                    _LOGGER.warning("Imported credentials rejected: %s", err)
-                    errors["base"] = "invalid_auth"
-                except WorksWithAlexaError as err:
-                    _LOGGER.warning("Could not verify imported bundle: %s", err)
-                    errors["base"] = "cannot_connect"
-                else:
-                    return await self._async_finalize(credentials, email)
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_CREDENTIALS): str,
-                vol.Required(CONF_URL, default=DEFAULT_DOMAIN): vol.In(
-                    SUPPORTED_DOMAINS
-                ),
-                vol.Required(
-                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
-        )
-        return self.async_show_form(
-            step_id="import_token", data_schema=schema, errors=errors
-        )
-
-    # --- borrowing from alexa_media_player ----------------------------------
-
-    def _alexa_media_accounts(self) -> list[tuple[int, Any]]:
-        """(index, entry) for each alexa_media account holding a refresh token.
-
-        The index is the entry's position among all alexa_media entries, which
-        is part of how that integration derives its device serial.
-        """
-        accounts = []
-        for index, entry in enumerate(
-            self.hass.config_entries.async_entries(ALEXA_MEDIA_DOMAIN)
-        ):
-            oauth = entry.data.get(ALEXA_MEDIA_OAUTH) or {}
-            if oauth.get("refresh_token") and oauth.get("mac_dms"):
-                accounts.append((index, entry))
-        return accounts
-
-    async def _async_alexa_media_serial(
-        self, email: str, url: str, index: int
-    ) -> str:
-        """Reproduce the device serial alexa_media registered with.
-
-        That integration does not store the serial; it recomputes it from Home
-        Assistant's instance id, the account's position among its entries, and a
-        hash of email+url. The refresh token is bound to the device that
-        registered it, so the same serial has to be rebuilt the same way or
-        Amazon refuses the exchange.
-        """
-        from homeassistant.helpers.instance_id import async_get as async_get_instance_id
-
-        instance_id = await async_get_instance_id(self.hass)
-        return alexa_media_device_serial(instance_id, email, url, index)
-
-    async def async_step_import_alexa_media(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Reuse a token the alexa_media_player integration already holds.
-
-        Both integrations register as the same iOS app device type, so a token
-        minted by one is accepted for the other (ref/10). Refreshing does not
-        rotate the token, so borrowing it does not disturb the other
-        integration's session.
-        """
-        accounts = self._alexa_media_accounts()
-        if not accounts:
-            return self.async_abort(reason="no_alexa_media")
-
-        errors: dict[str, str] = {}
-        by_entry = {entry.entry_id: (index, entry) for index, entry in accounts}
-
-        if user_input is not None:
-            chosen = by_entry.get(user_input[CONF_ACCOUNT])
-            if chosen is None:
-                # Removed between rendering the form and submitting it.
-                return self.async_abort(reason="no_alexa_media")
-            index, entry = chosen
-            oauth = entry.data[ALEXA_MEDIA_OAUTH]
-            email = entry.data.get("email", "")
-            url = entry.data.get("url", DEFAULT_DOMAIN)
-
-            self._config[CONF_URL] = url
-            self._config[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
-            credentials = {
-                "refresh_token": oauth["refresh_token"],
-                "mac_dms": oauth["mac_dms"],
-                "device_serial": await self._async_alexa_media_serial(
-                    email, url, index
-                ),
-            }
-            try:
-                verified_email = await self._async_verify(credentials)
-            except AuthError as err:
-                _LOGGER.warning("Borrowed credentials rejected: %s", err)
-                errors["base"] = "invalid_auth"
-            except WorksWithAlexaError as err:
-                _LOGGER.warning("Could not verify borrowed credentials: %s", err)
-                errors["base"] = "cannot_connect"
-            else:
-                return await self._async_finalize(
-                    credentials, verified_email or email or None
-                )
-
-        labels = {
-            entry.entry_id: entry.title or entry.data.get("email", entry.entry_id)
-            for _, entry in accounts
-        }
-        default_account = next(iter(labels))
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_ACCOUNT, default=default_account): vol.In(labels),
-                vol.Required(
-                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }
-        )
-        return self.async_show_form(
-            step_id="import_alexa_media", data_schema=schema, errors=errors
-        )
-
-    # --- the relay ----------------------------------------------------------
-
-    async def async_step_start_proxy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Stand up the relay and hand the browser off to Amazon's sign-in."""
-        hass_url = self._config[CONF_HASS_URL]
-        # The browser-facing base the relay writes into rewritten URLs. It must
-        # end in "/" and carry the full external origin + mount path.
-        proxy_base = f"{hass_url}{AUTH_PROXY_PATH}/"
-
-        # Reuse one device fingerprint across every attempt. Minting a fresh one
-        # per try makes each retry look like a brand-new device registering on
-        # the account -- a velocity signal that triggers Amazon's proof-of-work
-        # challenge (threads/002 Q9). Persist it so it survives separate flows.
-        store: Store = Store(self.hass, FINGERPRINT_STORAGE_VERSION, FINGERPRINT_STORAGE_KEY)
-        fingerprint = self._fingerprint or await store.async_load()
-
-        WorksWithAlexaConfigFlow.proxy = LoginRelay(
-            self._config[CONF_URL],
-            AUTH_PROXY_PATH,
-            proxy_base,
-            fingerprint=fingerprint,
-            autofill=self._relay_autofill(),
-        )
-        await WorksWithAlexaConfigFlow.proxy.async_start()
-        self._fingerprint = WorksWithAlexaConfigFlow.proxy.fingerprint
-        # Persist a freshly-minted fingerprint so the next attempt reuses it.
-        if fingerprint != self._fingerprint:
-            await store.async_save(self._fingerprint)
-
-        if not WorksWithAlexaConfigFlow.proxy_view:
-            WorksWithAlexaConfigFlow.proxy_view = WorksWithAlexaProxyView(
-                WorksWithAlexaConfigFlow.proxy.handle
-            )
-        else:
-            WorksWithAlexaConfigFlow.proxy_view.handler = (
-                WorksWithAlexaConfigFlow.proxy.handle
-            )
-        self.hass.http.register_view(WorksWithAlexaCallbackView())
-        self.hass.http.register_view(WorksWithAlexaConfigFlow.proxy_view)
-
-        callback_url = (
-            URL(hass_url)
-            .with_path(AUTH_CALLBACK_PATH)
-            .with_query({"flow_id": self.flow_id})
-        )
-        # The browser lands on the relay root, which serves the signin page.
-        proxy_target = URL(proxy_base).with_query(
-            {"config_flow_id": self.flow_id, "callback_url": str(callback_url)}
-        )
-        return self.async_external_step(
-            step_id="check_proxy", url=str(proxy_target)
-        )
-
-    async def async_step_check_proxy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Browser has bounced back; tear down the relay's IP allowlist."""
-        if WorksWithAlexaConfigFlow.proxy_view:
-            WorksWithAlexaConfigFlow.proxy_view.reset()
-        return self.async_external_step_done(next_step_id="finish")
-
-    async def async_step_finish(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Exchange the captured code for durable credentials and create the entry."""
-        proxy = WorksWithAlexaConfigFlow.proxy
-        if proxy is None:
-            return self.async_abort(reason="proxy_missing")
-
-        try:
-            credentials = await proxy.async_finish()
-        except AuthError as err:
-            _LOGGER.warning("Login did not complete: %s", err)
-            return self._retry_user("login_failed")
-        except WorksWithAlexaError as err:
-            _LOGGER.warning("Login connection error: %s", err)
-            return self._retry_user("cannot_connect")
-        finally:
-            await proxy.async_stop()
-
-        # Identify the account from the session rather than asking the user.
-        email = await self._async_identify(credentials)
+    async def _async_complete_browser_signin(self, user_input) -> ConfigFlowResult:
+        """Verify the account before creating or replacing an entry."""
+        credentials = self._direct_credentials
+        self._config["auth_method"] = "direct_browser"
+        report = credentials["registration_expiry_report"]
+        self._config["enrolled_at"] = report["received_at_utc"]
+        email = await self._async_verify(credentials)
+        if not email:
+            raise AuthError("Amazon did not identify the signed-in account")
+        auth_event("signin.verified", method="direct_browser",
+                   rt_fingerprint=fingerprint(credentials["refresh_token"]),
+                   mfa_observed=self._config.get("mfa_observed", "unknown"))
         return await self._async_finalize(credentials, email)
 
     # --- shared tail --------------------------------------------------------
@@ -785,6 +211,20 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # before the device picker so a duplicate aborts immediately rather than
         # after the user has worked through a long list.
         unique_id = email or credentials["device_serial"]
+        if self.source == SOURCE_REAUTH:
+            entry = self._get_reauth_entry()
+            if entry.unique_id == entry.data.get(CONF_DEVICE_SERIAL):
+                if not email:
+                    raise AuthError("Amazon did not identify the signed-in account")
+                expected = await self._async_legacy_account_email(entry)
+                if expected is None:
+                    self._legacy_reauth = (credentials, email, dict(entry.data))
+                    return await self.async_step_confirm_legacy_account()
+                if not email or expected != email:
+                    return self.async_abort(reason="wrong_account")
+                # The serial remains the HA identity; directed_id stores the
+                # verified account identity for subsequent reauthentication.
+                unique_id = entry.unique_id
         await self.async_set_unique_id(unique_id)
 
         if self.source == SOURCE_REAUTH:
@@ -792,12 +232,20 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             # Treating it as a new entry would abort as already-configured, which
             # is what made reauth impossible to complete.
             self._abort_if_unique_id_mismatch(reason="wrong_account")
+            auth_event("signin.completed", entry_id=self._get_reauth_entry().entry_id,
+                       method=self._config.get("auth_method", "existing_credentials"), reauth=True,
+                       mfa_observed=self._config.get("mfa_observed", "unknown"),
+                       rt_fingerprint=fingerprint(credentials["refresh_token"]))
             return self.async_update_reload_and_abort(
                 self._get_reauth_entry(),
                 data_updates={
+                    CONF_URL: self._config[CONF_URL],
                     CONF_DEVICE_SERIAL: credentials["device_serial"],
                     CONF_REFRESH_TOKEN: credentials["refresh_token"],
                     CONF_MAC_DMS: credentials["mac_dms"],
+                    CONF_DIRECTED_ID: email,
+                    "auth_method": self._config.get("auth_method", "existing_credentials"),
+                    "enrolled_at": self._config.get("enrolled_at"),
                 },
             )
 
@@ -806,6 +254,66 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._credentials = credentials
         self._email = email
         return await self.async_step_select_devices()
+
+    async def _async_legacy_account_email(self, entry) -> str | None:
+        """Establish legacy ownership from stored identity or old credentials."""
+        known = entry.data.get(CONF_DIRECTED_ID)
+        if known and known != entry.unique_id:
+            return known
+        pending = getattr(self, "_legacy_reauth", None)
+        if getattr(self, "_legacy_confirmed", False) and pending and dict(entry.data) == pending[2]:
+            return pending[1]
+        before = dict(entry.data)
+        old_credentials = {
+            key: before[key] for key in (CONF_URL, CONF_DEVICE_SERIAL, CONF_REFRESH_TOKEN)
+        }
+        old_credentials[CONF_MAC_DMS] = before.get(CONF_MAC_DMS, {})
+        try:
+            email = await self._async_verify(old_credentials)
+        except AuthError as err:
+            if not err.root_token_rejected:
+                raise ApiConnectionError("The previous account could not be verified; retry") from err
+            email = None
+        finally:
+            # Verification can rotate the old registration even if its web
+            # session fails afterward. Do not overwrite a concurrent sign-in.
+            if dict(entry.data) == before:
+                self.hass.config_entries.async_update_entry(entry, data={
+                    **entry.data,
+                    CONF_REFRESH_TOKEN: old_credentials[CONF_REFRESH_TOKEN],
+                    CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
+                })
+        if dict(entry.data) != {
+            **before, CONF_REFRESH_TOKEN: old_credentials[CONF_REFRESH_TOKEN],
+            CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
+        }:
+            raise WorksWithAlexaError("The entry changed during account verification; retry sign-in")
+        if email:
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_DIRECTED_ID: email}
+            )
+        return email
+
+    async def async_step_confirm_legacy_account(self, user_input=None) -> ConfigFlowResult:
+        """Require explicit account binding when legacy ownership is unavailable."""
+        pending = self._legacy_reauth
+        if self.source != SOURCE_REAUTH or pending is None:
+            return self.async_abort(reason="wrong_account")
+        entry = self._get_reauth_entry()
+        if entry.unique_id != entry.data[CONF_DEVICE_SERIAL] or dict(entry.data) != pending[2]:
+            return self.async_abort(reason="wrong_account")
+        errors = {}
+        if user_input is not None:
+            if user_input.get("confirm_account") is True:
+                self._legacy_confirmed = True
+                return await self._async_finalize(pending[0], pending[1])
+            errors["base"] = "account_confirmation_required"
+        return self.async_show_form(
+            step_id="confirm_legacy_account",
+            data_schema=vol.Schema({vol.Required("confirm_account", default=False): bool}),
+            description_placeholders={"account": pending[1]},
+            errors=errors,
+        )
 
     async def async_step_select_devices(
         self, user_input: dict[str, Any] | None = None
@@ -846,7 +354,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             # Starts empty: opting in beats opting out when the account
             # carries far more devices than anyone wants in Home
             # Assistant. Optional so submitting nothing is allowed.
-            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=list): cv.multi_select(
+            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=list): checkbox_selector(
                 self._choices
             ),
         }
@@ -882,7 +390,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="scenes",
             data_schema=vol.Schema({
-                vol.Optional(CONF_INCLUDE_SCENES, default=list): cv.multi_select(self._scene_choices),
+                vol.Optional(CONF_INCLUDE_SCENES, default=list): checkbox_selector(self._scene_choices),
             }),
             description_placeholders={"count": str(len(self._scene_choices))},
         )
@@ -899,14 +407,12 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_DEVICE_SERIAL: credentials["device_serial"],
             CONF_REFRESH_TOKEN: credentials["refresh_token"],
             CONF_MAC_DMS: credentials["mac_dms"],
+            "auth_method": self._config.get("auth_method", "existing_credentials"),
+            "enrolled_at": self._config.get("enrolled_at"),
         }
         options: dict[str, Any] = {
             CONF_SCAN_INTERVAL: self._config[CONF_SCAN_INTERVAL]
         }
-        # Kept so a later reauth can stand the relay back up on the same URL the
-        # browser reached the first time. Only the sign-in path collects one.
-        if CONF_HASS_URL in self._config:
-            options[CONF_HASS_URL] = self._config[CONF_HASS_URL]
         # Absent entirely means "everything", which is what a failed listing
         # falls back to. An empty list means the user deliberately chose none.
         if CONF_INCLUDE_ENDPOINTS in self._config:
@@ -915,22 +421,32 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         options[CONF_INCLUDE_SCENES] = self._config.get(CONF_INCLUDE_SCENES, [])
 
         title = f"Works with Alexa ({email})" if email else "Works with Alexa"
+        auth_event("signin.completed", method=data["auth_method"], reauth=False,
+                   mfa_observed=self._config.get("mfa_observed", "unknown"),
+                   rt_fingerprint=fingerprint(credentials["refresh_token"]))
         return self.async_create_entry(title=title, data=data, options=options)
 
     async def _async_session(self, credentials: dict[str, Any]) -> Any:
         """A live session built from the credentials."""
-        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+        from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
         from .api import AmazonAlexaSession
 
         session = AmazonAlexaSession(
-            async_get_clientsession(self.hass),
-            domain=self._config[CONF_URL],
+            async_create_clientsession(self.hass, auto_cleanup=False, cookie_jar=aiohttp.CookieJar(),
+                                       timeout=aiohttp.ClientTimeout(total=60)),
+            domain=credentials.get(CONF_URL, self._config[CONF_URL]),
             device_serial=credentials["device_serial"],
             refresh_token=credentials["refresh_token"],
             mac_dms=credentials["mac_dms"],
         )
-        await session.async_setup()
+        try:
+            await session.async_setup()
+        except BaseException:
+            session.detach_client()
+            raise
+        finally:
+            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
         return session
 
     async def _async_verify(self, credentials: dict[str, Any]) -> str | None:
@@ -940,50 +456,26 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         :class:`WorksWithAlexaError` if Amazon could not be reached.
         """
         session = await self._async_session(credentials)
-        return await session.async_get_account_email()
+        try:
+            return await session.async_get_account_email()
+        finally:
+            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
+            session.detach_client()
 
     async def _async_endpoints(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """Every endpoint on the account, for the device picker."""
         session = await self._async_session(credentials)
-        endpoints = await session.async_get_endpoints()
         try:
-            self._scene_choices = scene_choices(await session.async_get_scenes())
-        except WorksWithAlexaError:
-            _LOGGER.warning("Could not list Alexa scenes for setup")
-            self._scene_choices = {}
-        return endpoints
-
-    async def _async_identify(self, credentials: dict[str, Any]) -> str | None:
-        """Best-effort account email for the login path.
-
-        Failure here is non-fatal: the relay handshake already proved the
-        credentials, so a working login is never thrown away over a cosmetic
-        lookup.
-        """
-        try:
-            return await self._async_verify(credentials)
-        except WorksWithAlexaError as err:
-            _LOGGER.debug("Account identification failed, using serial: %s", err)
-            return None
-
-    def _retry_user(self, reason: str) -> ConfigFlowResult:
-        """Return to the sign-in form that started this attempt, with an error.
-
-        The previous answers are kept as the suggested values: this form is
-        shown after a failed sign-in, and making the user re-derive their own
-        URL -- or retype a password that was probably right -- is the wrong
-        moment to do it. The values stay in this flow's memory.
-        """
-        suggested = {
-            CONF_URL: self._config.get(CONF_URL, DEFAULT_DOMAIN),
-            CONF_HASS_URL: self._config.get(CONF_HASS_URL) or self._default_hass_url(),
-            CONF_SCAN_INTERVAL: self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-            **(self._autofill or {}),
-        }
-        self._config = {}
-        return self._show_login_form(
-            self._login_step, suggested=suggested, errors={"base": reason}
-        )
+            endpoints = await session.async_get_endpoints()
+            try:
+                self._scene_choices = scene_choices(await session.async_get_scenes())
+            except WorksWithAlexaError:
+                _LOGGER.warning("Could not list Alexa scenes for setup")
+                self._scene_choices = {}
+            return endpoints
+        finally:
+            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
+            session.detach_client()
 
     # --- reauth -------------------------------------------------------------
 
@@ -991,31 +483,16 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
         self._config[CONF_URL] = entry_data.get(CONF_URL, DEFAULT_DOMAIN)
+        await async_enable_evidence_logging(self.hass)
+        auth_event("reauth.flow_started")
         return await self.async_step_reauth_confirm()
 
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Offer the same ways in as first-time setup.
-
-        Connection paths end in :meth:`_async_finalize`, which under reauth
-        updates the existing entry instead of creating one. The direct-login
-        experiment saves separately and leaves this entry unchanged.
-        """
-        # Prefill from the entry: its stored hass_url and scan interval. An
-        # entry created by an import path never collected a hass_url, so fall
-        # back to this instance's own URL rather than a constant that is only
-        # right by luck.
-        entry = self._get_reauth_entry()
-        self._config[CONF_HASS_URL] = entry.options.get(
-            CONF_HASS_URL, self._default_hass_url()
-        )
-        self._config[CONF_SCAN_INTERVAL] = entry.options.get(
+    async def async_step_reauth_confirm(self, user_input=None) -> ConfigFlowResult:
+        """Recover the existing account through browser sign-in."""
+        self._config[CONF_SCAN_INTERVAL] = self._get_reauth_entry().options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
-        return self.async_show_menu(
-            step_id="reauth_confirm", menu_options=self._menu_options()
-        )
+        return await self.async_step_login_direct(user_input)
 
     @staticmethod
     @callback
@@ -1039,8 +516,14 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
             return await self.async_step_polling(user_input)
         event(_LOGGER, "options.opened", entry_id=self.config_entry.entry_id)
         return self.async_show_menu(
-            step_id="init", menu_options=["devices", "scenes", "polling"],
+            step_id="init", menu_options=["devices", "polling", "sign_in"],
         )
+
+    async def async_step_sign_in(self, user_input=None) -> ConfigFlowResult:
+        """Replace credentials through the account-checked reauth flow."""
+        self.config_entry.async_start_reauth(self.hass)
+        auth_event("reauth.requested", entry_id=self.config_entry.entry_id, trigger="user")
+        return self.async_abort(reason="reauth_started")
 
     async def async_step_polling(
         self, user_input: dict[str, Any] | None = None
@@ -1059,38 +542,18 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
     async def async_step_devices(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Edit device checkboxes, then continue to scene checkboxes."""
         coordinator = getattr(self.config_entry, "runtime_data", None)
         if coordinator is None:
             return self.async_show_form(
                 step_id="devices", data_schema=vol.Schema({}),
                 errors={"base": "entry_unavailable"}, description_placeholders={"count": "0"},
             )
+        if user_input is not None:
+            return await self._async_choose_scenes(user_input.get(CONF_INCLUDE_ENDPOINTS, []))
+
         await coordinator.async_request_refresh()
         choices = self._endpoint_choices()
-        return self.async_show_menu(
-            step_id="devices",
-            menu_options=[
-                "devices_keep",
-                "devices_pick",
-                "devices_all",
-                "devices_none",
-            ],
-            description_placeholders={"count": str(len(choices))},
-        )
-
-    async def async_step_devices_keep(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Save the interval without touching the device selection."""
-        return await self._async_choose_scenes()
-
-    async def async_step_devices_pick(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Edit the selection, starting from what is currently in use."""
-        choices = self._endpoint_choices()
-        if user_input is not None:
-            return await self._async_choose_scenes(user_input[CONF_INCLUDE_ENDPOINTS])
 
         selected = self.config_entry.options.get(CONF_INCLUDE_ENDPOINTS)
         if selected is None:
@@ -1108,28 +571,17 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
             ]
 
         schema: dict[Any, Any] = {
-            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=default): cv.multi_select(
+            vol.Optional(CONF_INCLUDE_ENDPOINTS, default=default): checkbox_selector(
                 choices
             ),
         }
 
         return self.async_show_form(
-            step_id="devices_pick",
+            step_id="devices",
             data_schema=vol.Schema(schema),
             description_placeholders={"count": str(len(choices))},
+            last_step=False,
         )
-
-    async def async_step_devices_all(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Every device."""
-        return await self._async_choose_scenes(list(self._endpoint_choices()))
-
-    async def async_step_devices_none(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """No devices at all."""
-        return await self._async_choose_scenes([])
 
     async def _async_choose_scenes(self, include: list[str] | None = None) -> ConfigFlowResult:
         self._pending_include = include
@@ -1162,9 +614,10 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
             step_id="scenes",
             data_schema=vol.Schema({
                 vol.Optional(CONF_INCLUDE_SCENES, default=[key for key in choices if key in selected]):
-                    cv.multi_select(choices),
+                    checkbox_selector(choices),
             }),
             description_placeholders={"count": str(len(choices))},
+            last_step=True,
         )
 
     def _save(self, include: list[str] | None = None, scenes: list[str] | None = None) -> ConfigFlowResult:
@@ -1193,73 +646,3 @@ class WorksWithAlexaOptionsFlow(OptionsFlow):
     def _endpoint_choices(self) -> dict[str, str]:
         """Labels for the device picker."""
         return endpoint_choices(self._endpoints())
-
-
-class WorksWithAlexaCallbackView(HomeAssistantView):
-    """Amazon's redirect lands here and resumes the flow."""
-
-    url = AUTH_CALLBACK_PATH
-    name = AUTH_CALLBACK_NAME
-    requires_auth = False
-
-    async def get(self, request: web.Request) -> web.Response:
-        hass = request.app["hass"]
-        try:
-            await hass.config_entries.flow.async_configure(
-                flow_id=request.query["flow_id"], user_input=None
-            )
-        except (KeyError, UnknownFlow) as err:
-            raise HTTPBadRequest() from err
-        return web.Response(
-            headers={"content-type": "text/html"},
-            text="<script>window.close()</script>Success! This window can be closed.",
-        )
-
-
-class WorksWithAlexaProxyView(HomeAssistantView):
-    """Mounts the relay's request handler on Home Assistant's web server.
-
-    Guarded so it only serves a browser whose request carries an in-progress
-    flow id, and only from an IP that presented one recently.
-    """
-
-    url = AUTH_PROXY_PATH
-    extra_urls = [f"{AUTH_PROXY_PATH}/{{tail:.*}}"]
-    name = AUTH_PROXY_NAME
-    requires_auth = False
-    handler: web.RequestHandler = None
-    known_ips: dict[str, datetime.datetime] = {}
-    auth_seconds = 300
-
-    def __init__(self, handler: web.RequestHandler) -> None:
-        WorksWithAlexaProxyView.handler = handler
-        for method in ("get", "post", "delete", "put", "patch", "head", "options"):
-            setattr(self, method, self.check_auth())
-
-    @classmethod
-    def reset(cls) -> None:
-        cls.known_ips = {}
-
-    @classmethod
-    def check_auth(cls):
-        async def wrapped(request: web.Request, **kwargs):
-            hass = request.app["hass"]
-            last_seen = cls.known_ips.get(request.remote)
-            stale = (
-                last_seen is None
-                or (datetime.datetime.now() - last_seen).seconds > cls.auth_seconds
-            )
-            if stale:
-                try:
-                    flow_id = request.url.query["config_flow_id"]
-                except KeyError as err:
-                    raise Unauthorized() from err
-                if not any(
-                    flow["flow_id"] == flow_id
-                    for flow in hass.config_entries.flow.async_progress()
-                ):
-                    raise Unauthorized()
-                cls.known_ips[request.remote] = datetime.datetime.now()
-            return await cls.handler(request, **kwargs)
-
-        return wrapped
