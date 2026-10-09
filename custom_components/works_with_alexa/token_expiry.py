@@ -164,4 +164,3 @@ def saved_registration_report(report: dict) -> dict:
             "No readable explicit refresh-token expiry found. This does not prove unlimited validity."
         ),
     }
-
