@@ -201,9 +201,8 @@ and restart Home Assistant.
 
 Either way, finish in Settings → Devices & services → Add integration → **Works with Alexa**.
 
-The declared minimum is Home Assistant **2024.6.0**. This development session
-used **2026.9.4**; the minimum needs revalidation for the new options and platform
-changes before release. No Python requirements beyond Home Assistant itself.
+Requires Home Assistant **2026.3.0 or newer**, including support for the bundled
+integration icon. No Python requirements beyond Home Assistant itself.
 
 ## Development
 
