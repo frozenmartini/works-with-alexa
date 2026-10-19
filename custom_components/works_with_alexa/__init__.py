@@ -35,6 +35,7 @@ from .const import (
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import async_enable_evidence_logging, event
 from .features import writable_feature_keys
+from .identity import account_id, is_email
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +54,38 @@ type WorksWithAlexaConfigEntry = ConfigEntry[WorksWithAlexaCoordinator]
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await async_enable_evidence_logging(hass)
+    return True
+
+
+async def async_migrate_entry(
+    hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
+) -> bool:
+    """Replace a stored account email with its one-way key (entry 1.1 -> 1.2).
+
+    0.1.0 stored the account email as the unique id, as ``directed_id`` and in
+    the generated title. The key keeps duplicate and same-account checks
+    working; the email is no longer kept anywhere in the entry.
+    """
+    if entry.version != 1:
+        return False
+    if entry.minor_version >= 2:
+        return True
+    changes: dict = {"minor_version": 2}
+    email = entry.data.get(CONF_DIRECTED_ID)
+    if is_email(email):
+        changes["data"] = {**entry.data, CONF_DIRECTED_ID: account_id(email)}
+    if is_email(entry.unique_id):
+        changes["unique_id"] = account_id(entry.unique_id)
+    # Either stored email may have generated the title; an entry need not
+    # carry directed_id at all.
+    if entry.title in {
+        f"Works with Alexa ({value})"
+        for value in (email, entry.unique_id) if is_email(value)
+    }:
+        changes["title"] = "Works with Alexa"
+    hass.config_entries.async_update_entry(entry, **changes)
+    event(_LOGGER, "entry.migrated", entry_id=entry.entry_id, minor_version=2,
+          identity_replaced="data" in changes or "unique_id" in changes)
     return True
 
 
@@ -137,7 +170,7 @@ async def async_setup_entry(
                 entry.data.get(key) for key in credential_fields
             ):
                 hass.config_entries.async_update_entry(
-                    entry, data={**entry.data, CONF_DIRECTED_ID: email}
+                    entry, data={**entry.data, CONF_DIRECTED_ID: account_id(email)}
                 )
                 auth_event("identity.learned", entry_id=entry.entry_id)
 

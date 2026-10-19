@@ -27,6 +27,7 @@ from homeassistant.helpers.selector import (
 from .auth_watch import auth_event, fingerprint
 from .enrollment import DirectEnrollment, InvalidRedirect
 from .dev_logging import async_enable_evidence_logging, event
+from .identity import account_id, is_email
 from .const import (
     CONF_DEVICE_SERIAL, CONF_DIRECTED_ID, CONF_INCLUDE_ENDPOINTS, CONF_INCLUDE_SCENES,
     CONF_MAC_DMS, CONF_REFRESH_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_DOMAIN,
@@ -86,6 +87,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the login/registration flow."""
 
     VERSION = 1
+    # 1.2: the account identity is stored as a one-way key, never the email.
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
@@ -126,15 +129,18 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             auth_event("signin.started", method="direct_browser", interactive=True,
                        mfa_observed="unknown")
             return await self.async_step_direct_redirect()
-        return self.async_show_form(
-            step_id="login_direct",
-            data_schema=vol.Schema({
-                vol.Required(CONF_URL, default=self._config.get(CONF_URL, DEFAULT_DOMAIN)):
-                    vol.In(SUPPORTED_DOMAINS),
-                vol.Optional(CONF_SCAN_INTERVAL, default=self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)):
-                    vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL)),
-            }),
-        )
+        fields = {
+            vol.Required(CONF_URL, default=self._config.get(CONF_URL, DEFAULT_DOMAIN)):
+                vol.In(SUPPORTED_DOMAINS),
+        }
+        # Reauthentication replaces credentials only; the interval lives in the
+        # entry's options and is changed there, so it is not offered here.
+        if self.source != SOURCE_REAUTH:
+            fields[vol.Optional(
+                CONF_SCAN_INTERVAL,
+                default=self._config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            )] = vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL))
+        return self.async_show_form(step_id="login_direct", data_schema=vol.Schema(fields))
 
     async def async_step_direct_redirect(
         self, user_input: dict[str, Any] | None = None
@@ -209,21 +215,27 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         # Prefer the account identity over the device serial as the unique id, so
         # re-registering the same account is recognised as a duplicate. Checked
         # before the device picker so a duplicate aborts immediately rather than
-        # after the user has worked through a long list.
-        unique_id = email or credentials["device_serial"]
+        # after the user has worked through a long list. The identity is a
+        # one-way key of the email; the email itself is never stored.
+        account = account_id(email) if email else None
+        unique_id = account or credentials["device_serial"]
         if self.source == SOURCE_REAUTH:
             entry = self._get_reauth_entry()
             if entry.unique_id == entry.data.get(CONF_DEVICE_SERIAL):
                 if not email:
                     raise AuthError("Amazon did not identify the signed-in account")
-                expected = await self._async_legacy_account_email(entry)
+                expected = await self._async_legacy_account(entry)
                 if expected is None:
                     self._legacy_reauth = (credentials, email, dict(entry.data))
                     return await self.async_step_confirm_legacy_account()
-                if not email or expected != email:
+                if expected != account:
                     return self.async_abort(reason="wrong_account")
                 # The serial remains the HA identity; directed_id stores the
                 # verified account identity for subsequent reauthentication.
+                unique_id = entry.unique_id
+            elif is_email(entry.unique_id) and account_id(entry.unique_id) == account:
+                # Not loaded since 0.1.0, so not yet migrated: the email is
+                # still its unique id. Migration replaces it on the next load.
                 unique_id = entry.unique_id
         await self.async_set_unique_id(unique_id)
 
@@ -243,26 +255,37 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_DEVICE_SERIAL: credentials["device_serial"],
                     CONF_REFRESH_TOKEN: credentials["refresh_token"],
                     CONF_MAC_DMS: credentials["mac_dms"],
-                    CONF_DIRECTED_ID: email,
+                    CONF_DIRECTED_ID: account,
                     "auth_method": self._config.get("auth_method", "existing_credentials"),
                     "enrolled_at": self._config.get("enrolled_at"),
                 },
             )
 
+        # An entry not loaded since 0.1.0 (a disabled one, say) still holds the
+        # email as its unique id, which the key alone would not match.
+        if account and any(
+            is_email(other.unique_id) and account_id(other.unique_id) == account
+            for other in self._async_current_entries(include_ignore=False)
+        ):
+            return self.async_abort(reason="already_configured")
         self._abort_if_unique_id_configured()
 
         self._credentials = credentials
         self._email = email
         return await self.async_step_select_devices()
 
-    async def _async_legacy_account_email(self, entry) -> str | None:
-        """Establish legacy ownership from stored identity or old credentials."""
+    async def _async_legacy_account(self, entry) -> str | None:
+        """Establish legacy ownership from stored identity or old credentials.
+
+        Returns the account key (see :func:`account_id`), or None if the
+        account cannot be established and the user has to confirm it.
+        """
         known = entry.data.get(CONF_DIRECTED_ID)
         if known and known != entry.unique_id:
-            return known
+            return account_id(known) if is_email(known) else known
         pending = getattr(self, "_legacy_reauth", None)
         if getattr(self, "_legacy_confirmed", False) and pending and dict(entry.data) == pending[2]:
-            return pending[1]
+            return account_id(pending[1])
         before = dict(entry.data)
         old_credentials = {
             key: before[key] for key in (CONF_URL, CONF_DEVICE_SERIAL, CONF_REFRESH_TOKEN)
@@ -288,11 +311,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
         }:
             raise WorksWithAlexaError("The entry changed during account verification; retry sign-in")
-        if email:
-            self.hass.config_entries.async_update_entry(
-                entry, data={**entry.data, CONF_DIRECTED_ID: email}
-            )
-        return email
+        if not email:
+            return None
+        account = account_id(email)
+        self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_DIRECTED_ID: account}
+        )
+        return account
 
     async def async_step_confirm_legacy_account(self, user_input=None) -> ConfigFlowResult:
         """Require explicit account binding when legacy ownership is unavailable."""
@@ -398,8 +423,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
     def _create_entry(self) -> ConfigFlowResult:
         """Write the entry from what the flow has gathered."""
         credentials = self._credentials
-        email = self._email
-        unique_id = email or credentials["device_serial"]
+        unique_id = account_id(self._email) if self._email else credentials["device_serial"]
 
         data = {
             CONF_URL: self._config[CONF_URL],
@@ -420,7 +444,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
 
         options[CONF_INCLUDE_SCENES] = self._config.get(CONF_INCLUDE_SCENES, [])
 
-        title = f"Works with Alexa ({email})" if email else "Works with Alexa"
+        # No email in the title either: the title is stored with the entry.
+        title = "Works with Alexa"
         auth_event("signin.completed", method=data["auth_method"], reauth=False,
                    mfa_observed=self._config.get("mfa_observed", "unknown"),
                    rt_fingerprint=fingerprint(credentials["refresh_token"]))
