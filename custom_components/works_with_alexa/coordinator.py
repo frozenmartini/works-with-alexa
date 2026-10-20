@@ -58,7 +58,8 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
         self.session = session
         self.configured_options = dict(entry.options)
         self.scenes: dict[str, AlexaScene] = {}
-        self.scenes_available = False
+        # None until the first scene discovery, so its first failure is logged.
+        self.scenes_available: bool | None = None
 
     @property
     def selected_scenes(self) -> dict[str, AlexaScene]:
@@ -92,13 +93,17 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             endpoints = await self.session.async_get_endpoints()
             try:
                 self.scenes = await self.session.async_get_scenes()
+                if self.scenes_available is False:
+                    _LOGGER.info("Alexa scenes are available again")
                 self.scenes_available = True
             except AuthError:
                 raise
             except WorksWithAlexaError:
                 # A scene discovery outage must not stop physical device polling.
+                # Log the outage once, not on every poll while it lasts.
+                if self.scenes_available is not False:
+                    _LOGGER.warning("Could not refresh Alexa scenes; scene buttons are unavailable")
                 self.scenes_available = False
-                _LOGGER.warning("Could not refresh Alexa scenes; scene buttons are unavailable")
             event(_LOGGER, "poll.completed", endpoints=len(endpoints), scenes=len(self.scenes),
                   scenes_available=self.scenes_available)
             return endpoints

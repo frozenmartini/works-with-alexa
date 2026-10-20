@@ -1,11 +1,11 @@
 """Switch entities for Works with Alexa.
 
-Every writable, unclaimed ``toggle`` feature becomes a switch -- the Window
-Fan's "Auto", the Dreo fans' "Mute" and "Display Auto Off". Power becomes a
-switch only where no natural entity owns it: the Roborock's on/off starts and
-stops a clean, and its action features advertise no operations, so a switch is
-the whole of what can be driven. On a fan, power is the fan's own on/off, and
-exposing it twice would let the two disagree.
+An endpoint's ``power`` becomes a switch named "Power" wherever it accepts both
+``turnOn`` and ``turnOff``, whatever the device is -- a fan's on/off, the
+Roborock's start/stop of a clean. Every writable ``toggle`` feature becomes a
+switch too, under Alexa's own label: the Window Fan's "Auto", the Dreo fans'
+"Mute" and "Display Auto Off". Nothing is assembled here; a whole fan is built
+from these entities in kitbash.
 """
 
 from __future__ import annotations

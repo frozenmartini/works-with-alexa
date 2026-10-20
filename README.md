@@ -105,8 +105,9 @@ on an error.
 
 Credential rotation belongs to the session that started it: a late refresh from
 an older session cannot overwrite a completed replacement sign-in. Scheduled
-renewal retries recoverable cookie/CSRF failures after 60 seconds; for scheduled
-renewal, only confirmed root-credential rejection requests interactive sign-in.
+renewal retries recoverable cookie/CSRF failures after 60 seconds, doubling the
+wait after each further failure up to an hour; for scheduled renewal, only
+confirmed root-credential rejection requests interactive sign-in.
 
 ## Capability matching
 

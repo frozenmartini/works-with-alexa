@@ -12,10 +12,14 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 import aiohttp
 
@@ -50,6 +54,10 @@ PLATFORMS: list[Platform] = [
 ]
 
 type WorksWithAlexaConfigEntry = ConfigEntry[WorksWithAlexaCoordinator]
+
+# Set up from the UI only. Defining async_setup without a schema would stop Home
+# Assistant from reporting a YAML entry for this domain as unsupported.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -175,7 +183,7 @@ async def async_setup_entry(
                 auth_event("identity.learned", entry_id=entry.entry_id)
 
     entry.runtime_data = coordinator
-    _purge_deselected(hass, entry, coordinator)
+    _purge_deselected(hass, entry)
     _purge_deselected_scenes(hass, entry)
     _purge_reclassified_sensors(hass, entry, coordinator)
     _purge_built_fan(hass, entry)
@@ -187,10 +195,16 @@ async def async_setup_entry(
     def request_reauth(err: AuthError) -> None:
         entry.async_start_reauth(hass)
 
+    # A callback, so it runs on the event loop: a plain function or lambda is
+    # run in the executor, where cancelling the watcher task is not thread-safe.
+    @callback
+    def stop_watcher_on_shutdown(_event: Event) -> None:
+        session.stop_refresh_watcher()
+
     session.start_refresh_watcher(request_reauth)
     entry.async_on_unload(session.stop_refresh_watcher)
     entry.async_on_unload(hass.bus.async_listen_once(
-        "homeassistant_stop", lambda _event: session.stop_refresh_watcher()
+        EVENT_HOMEASSISTANT_STOP, stop_watcher_on_shutdown
     ))
     event(_LOGGER, "entry.setup.completed", entry_id=entry.entry_id,
           selected_devices=len(coordinator.selected), selected_scenes=len(coordinator.selected_scenes))
@@ -201,7 +215,6 @@ async def async_setup_entry(
 def _purge_deselected(
     hass: HomeAssistant,
     entry: WorksWithAlexaConfigEntry,
-    coordinator: WorksWithAlexaCoordinator,
 ) -> None:
     """Drop registry devices the user has deselected.
 
@@ -209,15 +222,17 @@ def _purge_deselected(
     rebuilding its entities leaves it behind as an empty shell that can only be
     disabled. Deselecting is meant to remove, so remove it here.
 
-    Devices are only dropped when the selection is an explicit list. With no
-    selection recorded every endpoint is included, and an endpoint missing from
-    a poll is a transient gap, not a decision to forget the device.
+    Devices are only dropped when the selection is an explicit list, and only
+    when they are not on it. An endpoint missing from a poll is a transient
+    gap, not a decision to forget the device, so the selection decides what is
+    kept rather than what the latest poll returned.
     """
-    if entry.options.get(CONF_INCLUDE_ENDPOINTS) is None:
+    include = entry.options.get(CONF_INCLUDE_ENDPOINTS)
+    if include is None:
         return
 
     registry = dr.async_get(hass)
-    keep = set(coordinator.selected)
+    keep = set(include)
     if entry.options.get(CONF_INCLUDE_SCENES, []):
         keep.add(f"{entry.entry_id}:scenes")
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):

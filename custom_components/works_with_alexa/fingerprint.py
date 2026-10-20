@@ -12,6 +12,11 @@ device-type suffix a *second* time, producing a 120-char id whose
 for why Amazon blocks alexapy's login while accepting alexa-cookie2's. We follow
 alexa-cookie2 exactly: 92 chars, the suffix appended already-hex-encoded.
 
+Browser enrollment does not use that id. :mod:`.enrollment` sends the
+120-character form that alexapy-secure's ``/ap/register`` enrollment
+demonstrated, which has worked live; the suspicion above concerns the classic
+sign-in page, not that flow.
+
 These are stable per registration: mint once, persist, and reuse on every later
 login. A fingerprint that churns each login is precisely what anti-abuse looks
 for.

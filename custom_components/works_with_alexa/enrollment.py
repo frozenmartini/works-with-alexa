@@ -27,6 +27,19 @@ _LOCALES = {
     "amazon.ca": "en_CA", "amazon.com.mx": "es_MX",
 }
 _DIRECT_APP_VERSION = "2.2.556530.0"
+# The already-hex device-type suffix, hex-encoded once more below.
+_DEVICE_TYPE_HEX = b"23413249564c5635564d32573831"
+
+
+def direct_device_id(serial: str) -> str:
+    """The 120-character client id alexapy-secure's working enrollment sends.
+
+    The serial and the already-hex device-type suffix are hex-encoded together,
+    so the suffix is encoded twice. This deliberately differs from
+    :func:`.fingerprint.derive_device_id`'s 92-character form, which browser
+    enrollment does not use.
+    """
+    return (serial.encode("ascii") + _DEVICE_TYPE_HEX).hex()
 
 
 class InvalidRedirect(ValueError):
@@ -48,11 +61,7 @@ class DirectEnrollment:
             },
         }).encode()).decode().rstrip("=")
         # Match the identity used by alexapy-secure's demonstrated enrollment.
-        # Keep the relay's existing 92-character identity separate.
-        self.device_id = (
-            self.fingerprint["device_serial"].encode("ascii")
-            + b"23413249564c5635564d32573831"
-        ).hex()
+        self.device_id = direct_device_id(self.fingerprint["device_serial"])
 
     @property
     def login_url(self) -> str:
@@ -61,6 +70,8 @@ class DirectEnrollment:
             language=_LOCALES.get(self.domain, "en_US"),
         ))
         query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+        # alexapy-secure's working form: the .com handle on every marketplace
+        # and the offline_access scope, replacing the builder's defaults.
         query.update({
             "openid.assoc_handle": "amzn_dp_project_dee_ios",
             "pageId": "amzn_dp_project_dee_ios",
@@ -71,7 +82,7 @@ class DirectEnrollment:
     def use_device_serial(self, serial: str) -> None:
         """Keep the entry's device identity when enrolling it again."""
         self.fingerprint["device_serial"] = serial
-        self.device_id = (serial.encode("ascii") + b"23413249564c5635564d32573831").hex()
+        self.device_id = direct_device_id(serial)
 
     def authorization_code(self, pasted_url: str) -> str:
         """Validate locally before sending anything to Amazon; errors omit input."""

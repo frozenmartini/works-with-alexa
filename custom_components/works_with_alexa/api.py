@@ -61,6 +61,12 @@ _LOGGER = logging.getLogger(__name__)
 
 _REFRESH_BACKOFF = (1, 4, 16)
 
+# Scheduled renewal retries a recoverable failure after a minute, then doubles
+# the wait up to an hour, so a lasting failure cannot hit Amazon every minute
+# while the entry waits for the user to sign in again.
+_WATCHER_RETRY = 60
+_WATCHER_RETRY_MAX = 3600
+
 # Runtime form fields follow alexapy's Alexa iOS token/cookie exchanges.
 # Enrollment is kept separate; no /auth/register call is made during recovery.
 _DEVICE_SHAPE = {
@@ -71,6 +77,11 @@ _DEVICE_SHAPE = {
     "di.os.name": "iOS",
     "di.os.version": "16.6",
 }
+
+
+def _next_retry(previous: int) -> int:
+    """The watcher's wait after another failure: 60 s, doubling, at most an hour."""
+    return min(previous * 2, _WATCHER_RETRY_MAX) if previous else _WATCHER_RETRY
 
 
 class AmazonAlexaSession:
@@ -162,31 +173,31 @@ class AmazonAlexaSession:
         self._session.detach()
 
     async def _async_watch_refresh(self, on_auth_failure: Callable[[AuthError], None]) -> None:
-        retry_delay = False
+        retry_in = 0
         while True:
-            await asyncio.sleep(60 if retry_delay else max(1, self._expires_at - time.monotonic()))
+            await asyncio.sleep(retry_in or max(1, self._expires_at - time.monotonic()))
             try:
                 await self._async_ensure_token(reason="scheduled")
             except AuthError as err:
                 if not err.root_token_rejected:
+                    retry_in = _next_retry(retry_in)
                     self._auth("watcher.retry_scheduled", level=logging.WARNING,
-                               stage=err.stage, root_token_rejected=False, retry_in_seconds=60)
-                    retry_delay = True
+                               stage=err.stage, root_token_rejected=False, retry_in_seconds=retry_in)
                     continue
                 self._auth("reauth.required", level=logging.ERROR, stage=err.stage,
                            root_token_rejected=err.root_token_rejected, trigger="watcher")
                 on_auth_failure(err)
                 return
             except WorksWithAlexaError as err:
+                retry_in = _next_retry(retry_in)
                 self._auth("watcher.retry_scheduled", level=logging.WARNING,
-                           error_type=type(err).__name__, retry_in_seconds=60)
-                retry_delay = True
+                           error_type=type(err).__name__, retry_in_seconds=retry_in)
             except Exception as err:
+                retry_in = _next_retry(retry_in)
                 self._auth("watcher.unexpected_error", level=logging.ERROR,
-                           error_type=type(err).__name__, retry_in_seconds=60)
-                retry_delay = True
+                           error_type=type(err).__name__, retry_in_seconds=retry_in)
             else:
-                retry_delay = False
+                retry_in = 0
 
     async def async_get_account_email(self) -> str | None:
         """Read the authenticated account's email.

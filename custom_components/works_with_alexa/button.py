@@ -55,7 +55,7 @@ class WorksWithAlexaSceneButton(CoordinatorEntity[WorksWithAlexaCoordinator], Bu
     def available(self) -> bool:
         return (
             super().available
-            and self.coordinator.scenes_available
+            and self.coordinator.scenes_available is True
             and self._automation_id in self.coordinator.selected_scenes
         )
 

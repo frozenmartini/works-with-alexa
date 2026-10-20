@@ -67,10 +67,16 @@ class WorksWithAlexaLock(WorksWithAlexaEntity, LockEntity):
 
     @property
     def is_locked(self) -> bool | None:
+        """Only an explicit LOCKED or UNLOCKED decides; anything else is unknown.
+
+        A value outside the schema must never read as unlocked.
+        """
         state = self._state
-        if state is None or state == STATE_JAMMED:
-            return None
-        return state == STATE_LOCKED
+        if state == STATE_LOCKED:
+            return True
+        if state == STATE_UNLOCKED:
+            return False
+        return None
 
     @property
     def is_jammed(self) -> bool | None:

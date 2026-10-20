@@ -11,7 +11,9 @@ from .fingerprint import ALEXA_APP_VERSION
 _ASSOC_HANDLE_PREFIX = "amzn_dp_project_dee_ios"
 
 # alexa-cookie2 uses the bare device scope; alexapy appends offline_access. The
-# working login uses the bare form (ref/04 §1.1.1).
+# classic sign-in page uses the bare form (ref/04 §1.1.1). Browser enrollment
+# replaces it, and the marketplace handle, with alexapy-secure's values; see
+# enrollment.DirectEnrollment.login_url.
 _OAUTH_SCOPE = "device_auth_access"
 
 

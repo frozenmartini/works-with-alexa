@@ -1,10 +1,10 @@
 """Select entities for Works with Alexa.
 
-Every writable ``mode`` feature the fan has not absorbed becomes a select, with
-the device's own labels: the Window Fan's Direction ("Exhaust" / "Direct",
-which Home Assistant's fan direction cannot express, ref/07), the Dreo fans'
-Mode (Auto / Natural / Normal / Sleep). Only the Window Fan's ordered speed mode
-is absorbed, as the fan's percentage.
+Every writable ``mode`` feature with options becomes a select, with the
+device's own labels: the Window Fan's Direction ("Exhaust" / "Direct", which
+Home Assistant's fan direction cannot express, ref/07), the Dreo fans' Mode
+(Auto / Natural / Normal / Sleep), and ordered speed modes such as the Window
+Fan's speed. Nothing is absorbed into an assembled entity here.
 
 A thermostat's mode becomes a select too, offering exactly the modes the device
 advertises, so the owner's second integration can assemble a climate from it.
