@@ -29,8 +29,12 @@ Nothing is assembled here: whole devices (a fan from a power switch, a speed sel
 direction select, say) are built from these entities by the companion Kitbash integration.
 The built Window Fan `fan` entity that earlier versions carried was removed on 2026-09-13.
 
-Only endpoints with supported capabilities are offered, regardless of category
-or manufacturer; scene-trigger endpoints are never offered as devices. Devices
+Entities come only from the features Alexa's server reports for each device. The
+device type the Alexa app shows plays no part: the Kohler Anthem Plus shower
+system, which the Alexa app lists as Other, is mapped from its reported features
+like any other device. Only endpoints with supported capabilities are offered,
+regardless of category or manufacturer; scene-trigger endpoints are never
+offered as devices. Devices
 that yield only sensors are marked read-only in the picker. An application endpoint with power controls can be selectable;
 an Echo Show with a temperature value can yield a sensor. Scenes have a separate
 picker during setup and follow the device picker in Options. They start entirely
@@ -217,7 +221,8 @@ Check availability before writing.
 | Fan on/off, speed (mode), direction, toggles, range numbers | Verified live |
 | Thermostat setpoints and mode | Verified live from Home Assistant on an ecobee: mode, lower and upper setpoints confirmed by the next poll. In AUTO, a target-setpoint write moved both lower and upper on the device, and Alexa does not report the target back |
 | Lock / unlock | Verified live from Home Assistant on a Lockly smart lock: both commands accepted, the door actuated, and the next poll confirmed the state |
-| Vacuum actions (start, dock) | Status is read as a sensor; the integration sends no vacuum actions |
+| Vacuum (Roborock) | Verified live: the power switch, and cleaning and dock status as sensors. Alexa's cleaning actions are read as status, not sent |
+| Kohler Anthem and Anthem Plus shower system (Alexa type Other) | Verified live: every entity mapped from their reported features |
 
 ## Install
 
