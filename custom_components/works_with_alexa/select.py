@@ -8,7 +8,7 @@ Fan's speed. Nothing is absorbed into an assembled entity here.
 
 A thermostat's mode becomes a select too, offering exactly the modes the device
 advertises, so the owner's second integration can assemble a climate from it.
-That write has not yet been executed against a device.
+That write was verified from Home Assistant on an ecobee on 2026-10-21.
 """
 
 from __future__ import annotations
@@ -92,8 +92,9 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     """A thermostat's mode, raw: the device's own ``supportedModes`` as options.
 
     Written with ``setThermostatMode``. The payload mirrors the Smart Home
-    directive, ``{"thermostatMode": {"value": "COOL"}}``; verified on an ecobee
-    on 2026-10-21, accepted on the first attempt and confirmed by the next poll.
+    directive, ``{"thermostatMode": {"value": "COOL"}}``; verified from Home
+    Assistant on an ecobee on 2026-10-21, accepted on the first attempt and
+    confirmed by the next poll.
     """
 
     _wwa_operations = frozenset({SET_THERMOSTAT_MODE})

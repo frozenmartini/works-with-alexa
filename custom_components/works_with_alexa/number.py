@@ -8,7 +8,8 @@ a constant -- they are device-specific.
 
 A thermostat's setpoints become numbers too, one per setpoint the device
 reports (target, lower, upper), so the owner's second integration can assemble
-a climate from them. Those writes have not yet been executed against a device.
+a climate from them. Those writes were verified from Home Assistant on an
+ecobee on 2026-10-21.
 """
 
 from __future__ import annotations
@@ -118,10 +119,10 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
 
     Written with ``setTargetSetpoint`` keyed on the property name -- the rule
     every confirmed write follows (ref/07) -- carrying ``{value, scale}`` in the
-    scale the device reports in. Verified on an ecobee on 2026-10-21: lower and
-    upper writes were confirmed by the next poll. A target write in AUTO moved
-    both lower and upper on the device, and the target itself was not reported
-    back.
+    scale the device reports in. Verified from Home Assistant on an ecobee on
+    2026-10-21: lower and upper writes were confirmed by the next poll. A
+    target write in AUTO moved both lower and upper on the device, and the
+    target itself was not reported back.
     """
 
     _attr_mode = NumberMode.BOX

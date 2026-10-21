@@ -2,12 +2,13 @@
 
 A ``lock`` feature with both ``lock`` and ``unlock`` operations becomes a lock.
 The Front Door (Lockly, ``SMARTLOCK``) is the worked example: it carries nothing
-else, and has no other route into Home Assistant.
+else.
 
-State is ``lockState`` -- ``LOCKED`` / ``UNLOCKED`` / ``JAMMED``, per the schema
-introspected on 2026-09-13. The operations carry no ``payload`` field at all:
-with ``"payload": {}`` Amazon answers BAD_REQUEST. Both lock and unlock were
-verified against the Front Door on 2026-10-21.
+State is ``lockState``: ``LOCKED`` and ``UNLOCKED`` as reported live, and
+``JAMMED`` from the schema. The operations carry no ``payload`` field at all:
+with ``"payload": {}`` Amazon answers BAD_REQUEST. Lock and unlock were
+verified from Home Assistant on the Front Door on 2026-10-21: both accepted,
+the door actuated, and the next poll confirmed the state.
 """
 
 from __future__ import annotations
