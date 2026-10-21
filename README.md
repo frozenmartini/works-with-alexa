@@ -211,7 +211,7 @@ Check availability before writing.
 |---|---|
 | Discovery and capability classification | Verified with live read-only queries |
 | Direct browser enrollment, phone 2FA and token refresh | Verified live in separate experimental storage |
-| Close Vanes scene activation | Verified live: the vanes physically closed. Amazon's reply is only a placeholder acknowledgement, so the integration cannot confirm a scene ran on its own |
+| Scene activation | Verified live. A scene button asks Alexa to run the same scene the Alexa app runs, so any scene that works from the Alexa app works from its button. Tested with ShadeAuto scenes: the vanes physically closed. Amazon's reply does not report whether the device acted |
 | Scene buttons, options management and development logs | Verified live: scene buttons, adding, editing and removing devices and scenes, and scene acknowledgements in the development logs |
 | Capability mapping and optimistic concurrency/expiry | Verified live: mapping and optimistic confirmation after Core restarts. Overlapping-failure handling is verified by automated tests |
 | Fan on/off, speed (mode), direction, toggles, range numbers | Verified live |
