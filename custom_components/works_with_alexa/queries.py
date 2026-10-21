@@ -149,16 +149,19 @@ def feature_control_request(
     """Build one element of ``featureControlRequests``.
 
     ``payload`` keys on the bare property name -- ``{"mode": "2"}``, confirmed by
-    execution -- and is ``{}`` for ``turnOn``/``turnOff``. ``instance`` is
-    omitted rather than sent as null for features that have none, such as
-    ``power``.
+    execution. ``None`` omits the field: the lock rejects ``lock``/``unlock``
+    with BAD_REQUEST when it carries ``"payload": {}`` and accepts them without
+    it (confirmed on the Front Door, 2026-10-21). ``turnOn``/``turnOff`` pass
+    ``{}`` explicitly, the shape confirmed for power. ``instance`` is omitted
+    rather than sent as null for features that have none, such as ``power``.
     """
     request: dict[str, Any] = {
         "endpointId": endpoint_id,
         "featureName": feature_name,
         "featureOperationName": operation,
-        "payload": payload if payload is not None else {},
     }
+    if payload is not None:
+        request["payload"] = payload
     if instance is not None:
         request["instance"] = instance
     return request

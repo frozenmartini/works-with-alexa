@@ -17,7 +17,6 @@ import logging
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
@@ -93,9 +92,8 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     """A thermostat's mode, raw: the device's own ``supportedModes`` as options.
 
     Written with ``setThermostatMode``. The payload mirrors the Smart Home
-    directive, ``{"thermostatMode": {"value": "COOL"}}``, as every confirmed
-    write so far has mirrored its directive; ref/08 inferred a bare string
-    instead, which is tried second. **Not yet executed against a device.**
+    directive, ``{"thermostatMode": {"value": "COOL"}}``; verified on an ecobee
+    on 2026-10-21, accepted on the first attempt and confirmed by the next poll.
     """
 
     _wwa_operations = frozenset({SET_THERMOSTAT_MODE})
@@ -127,24 +125,9 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
         return str(mode) if str(mode) in self._attr_options else None
 
     async def async_select_option(self, option: str) -> None:
-        try:
-            await self.async_control(
-                SET_THERMOSTAT_MODE,
-                {THERMOSTAT_MODE_PROPERTY: {"value": option}},
-                assume=option,
-                assume_property=THERMOSTAT_MODE_PROPERTY,
-            )
-        except HomeAssistantError as first_error:
-            _LOGGER.debug(
-                "Wrapped thermostatMode payload was rejected (%s); trying the bare form",
-                first_error,
-            )
-            try:
-                await self.async_control(
-                    SET_THERMOSTAT_MODE,
-                    {THERMOSTAT_MODE_PROPERTY: option},
-                    assume=option,
-                    assume_property=THERMOSTAT_MODE_PROPERTY,
-                )
-            except HomeAssistantError:
-                raise first_error from None
+        await self.async_control(
+            SET_THERMOSTAT_MODE,
+            {THERMOSTAT_MODE_PROPERTY: {"value": option}},
+            assume=option,
+            assume_property=THERMOSTAT_MODE_PROPERTY,
+        )

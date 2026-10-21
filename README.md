@@ -215,8 +215,8 @@ Check availability before writing.
 | Scene buttons, options management and development logs | Loaded live; owner confirmed add/edit/remove; scene acknowledgements recorded |
 | Capability mapping and optimistic concurrency/expiry | Automated checks passed; mapping and optimistic confirmation observed live after Core restarts |
 | Fan on/off, speed (mode), direction, toggles, range numbers | Verified live |
-| Thermostat setpoints and mode | Implemented, **not yet executed** against a device |
-| Lock / unlock | Implemented, **not yet executed** against a device |
+| Thermostat setpoints and mode | Verified live on an ecobee: mode, lower and upper setpoints confirmed by the next poll. In AUTO, a target-setpoint write moved both lower and upper on the device, and Alexa does not report the target back |
+| Lock / unlock | Verified live on a Lockly smart lock: both commands accepted and the reported state followed |
 | Vacuum actions (start, dock) | Status is read; actions are **not driven** — payload unknown |
 
 ## Install

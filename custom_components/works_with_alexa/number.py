@@ -118,7 +118,10 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
 
     Written with ``setTargetSetpoint`` keyed on the property name -- the rule
     every confirmed write follows (ref/07) -- carrying ``{value, scale}`` in the
-    scale the device reports in. **Not yet executed against a device.**
+    scale the device reports in. Verified on an ecobee on 2026-10-21: lower and
+    upper writes were confirmed by the next poll. A target write in AUTO moved
+    both lower and upper on the device, and the target itself was not reported
+    back.
     """
 
     _attr_mode = NumberMode.BOX

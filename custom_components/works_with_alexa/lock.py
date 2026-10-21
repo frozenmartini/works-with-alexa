@@ -5,8 +5,9 @@ The Front Door (Lockly, ``SMARTLOCK``) is the worked example: it carries nothing
 else, and has no other route into Home Assistant.
 
 State is ``lockState`` -- ``LOCKED`` / ``UNLOCKED`` / ``JAMMED``, per the schema
-introspected on 2026-09-13. The operations take an empty payload, the same as
-turnOn/turnOff. Neither write has yet been executed against the device.
+introspected on 2026-09-13. The operations carry no ``payload`` field at all:
+with ``"payload": {}`` Amazon answers BAD_REQUEST. Both lock and unlock were
+verified against the Front Door on 2026-10-21.
 """
 
 from __future__ import annotations
