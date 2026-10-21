@@ -211,9 +211,9 @@ Check availability before writing.
 |---|---|
 | Discovery and capability classification | Verified with live read-only queries |
 | Direct browser enrollment, phone 2FA and token refresh | Verified live in separate experimental storage |
-| Close Vanes scene activation | Owner confirmed physical closure; API returned a placeholder acknowledgement |
-| Scene buttons, options management and development logs | Loaded live; owner confirmed add/edit/remove; scene acknowledgements recorded |
-| Capability mapping and optimistic concurrency/expiry | Automated checks passed; mapping and optimistic confirmation observed live after Core restarts |
+| Close Vanes scene activation | Verified live: the vanes physically closed. Amazon's reply is only a placeholder acknowledgement, so the integration cannot confirm a scene ran on its own |
+| Scene buttons, options management and development logs | Verified live: scene buttons, adding, editing and removing devices and scenes, and scene acknowledgements in the development logs |
+| Capability mapping and optimistic concurrency/expiry | Verified live: mapping and optimistic confirmation after Core restarts. Overlapping-failure handling is verified by automated tests |
 | Fan on/off, speed (mode), direction, toggles, range numbers | Verified live |
 | Thermostat setpoints and mode | Verified live from Home Assistant on an ecobee: mode, lower and upper setpoints confirmed by the next poll. In AUTO, a target-setpoint write moved both lower and upper on the device, and Alexa does not report the target back |
 | Lock / unlock | Verified live from Home Assistant on a Lockly smart lock: both commands accepted, the door actuated, and the next poll confirmed the state |
