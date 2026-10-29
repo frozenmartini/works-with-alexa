@@ -28,6 +28,7 @@ from .auth_watch import auth_event, fingerprint
 from .enrollment import DirectEnrollment, InvalidRedirect
 from .dev_logging import async_enable_evidence_logging, event
 from .identity import account_id, is_email
+from .signin_image import landing_image_uri
 from .const import (
     CONF_DEVICE_SERIAL, CONF_DIRECTED_ID, CONF_INCLUDE_ENDPOINTS, CONF_INCLUDE_SCENES,
     CONF_MAC_DMS, CONF_REFRESH_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_DOMAIN,
@@ -188,7 +189,10 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
                 )),
                 vol.Optional("restart_login", default=False): bool,
             }),
-            description_placeholders={"login_url": enrollment.login_url},
+            description_placeholders={
+                "login_url": enrollment.login_url,
+                "landing_image": await self.hass.async_add_executor_job(landing_image_uri),
+            },
             errors=errors,
         )
 

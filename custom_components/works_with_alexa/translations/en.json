@@ -30,7 +30,7 @@
       },
       "direct_redirect": {
         "title": "Complete Amazon sign-in",
-        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. When you reach a URL containing `/ap/maplanding`, copy the full address-bar URL. A blank or error page there is expected.\n4. Paste that URL below and submit promptly.\n\nThe account will be checked before the integration uses these credentials. If verification or saving fails, retry without starting another sign-in. Select Start a new sign-in if Amazon rejects the authorization code. Never share the redirect URL.",
+        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. Amazon then shows a \"Sorry, we couldn't find that page\" page. That is the correct page: sign-in worked. Copy the full URL from its address bar; it contains `/ap/maplanding`. On a phone, tap the address bar to show the whole URL.\n\n   ![Amazon's \"Sorry, we couldn't find that page\" page, the correct landing page]({landing_image})\n\n4. Paste that URL below and submit promptly.\n\nThe account will be checked before the integration uses these credentials. If verification or saving fails, retry without starting another sign-in. Select Start a new sign-in if Amazon rejects the authorization code. Never share the redirect URL.",
         "data": {
           "redirect_url": "Full Amazon redirect URL",
           "restart_login": "Start a new sign-in"
