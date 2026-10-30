@@ -472,9 +472,11 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             await session.async_setup()
         except BaseException:
-            session.detach_client()
+            # Settles and detaches; never raises, so the original error survives.
+            await session.async_release()
             raise
         finally:
+            # After the release: a reply that landed during a cancelled setup is kept.
             credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
         return session
 
@@ -489,7 +491,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return await session.async_get_account_email()
         finally:
             credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
-            session.detach_client()
+            await session.async_release()
 
     async def _async_endpoints(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """Every endpoint on the account, for the device picker."""
@@ -504,7 +506,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return endpoints
         finally:
             credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
-            session.detach_client()
+            await session.async_release()
 
     # --- reauth -------------------------------------------------------------
 

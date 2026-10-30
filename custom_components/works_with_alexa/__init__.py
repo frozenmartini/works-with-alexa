@@ -12,8 +12,8 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
@@ -26,6 +26,7 @@ import aiohttp
 from .api import AmazonAlexaSession
 # Importing .fingerprint binds that module onto this package's globals.
 from .auth_watch import auth_event, fingerprint as _token_fingerprint
+from .auth_runtime import AuthRuntime, CredentialGuard
 from .const import (
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
@@ -104,43 +105,30 @@ async def async_setup_entry(
     await async_enable_evidence_logging(hass)
     event(_LOGGER, "entry.setup.started", entry_id=entry.entry_id)
 
-    credential_fields = (
-        CONF_URL, CONF_DEVICE_SERIAL, CONF_REFRESH_TOKEN, CONF_MAC_DMS,
-        "auth_method", "enrolled_at",
-    )
-    accepted_credentials = tuple(entry.data.get(key) for key in credential_fields)
-    persistence_active = True
-
-    def stop_persistence() -> None:
-        nonlocal persistence_active
-        persistence_active = False
-
-    entry.async_on_unload(stop_persistence)
-
-    def persist_credentials(refresh_token: str, mac_dms: dict) -> bool:
-        nonlocal accepted_credentials, persistence_active
-        if not persistence_active or accepted_credentials != tuple(
-            entry.data.get(key) for key in credential_fields
-        ):
-            persistence_active = False
-            auth_event("credentials.superseded", entry_id=entry.entry_id)
-            return False
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_REFRESH_TOKEN: refresh_token, CONF_MAC_DMS: mac_dms}
+    guard = CredentialGuard(hass, entry)
+    client = async_create_clientsession(hass, auto_cleanup=False, cookie_jar=aiohttp.CookieJar(),
+                                        timeout=aiohttp.ClientTimeout(total=60))
+    try:
+        session = AmazonAlexaSession(
+            client,
+            domain=entry.data[CONF_URL],
+            device_serial=entry.data[CONF_DEVICE_SERIAL],
+            refresh_token=entry.data[CONF_REFRESH_TOKEN],
+            mac_dms=entry.data.get(CONF_MAC_DMS),
+            on_credentials=guard.publish,
+            entry_id=entry.entry_id,
         )
-        accepted_credentials = tuple(entry.data.get(key) for key in credential_fields)
-        return True
-
-    session = AmazonAlexaSession(
-        async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar(),
-                                   timeout=aiohttp.ClientTimeout(total=60)),
-        domain=entry.data[CONF_URL],
-        device_serial=entry.data[CONF_DEVICE_SERIAL],
-        refresh_token=entry.data[CONF_REFRESH_TOKEN],
-        mac_dms=entry.data.get(CONF_MAC_DMS),
-        on_credentials=persist_credentials,
-        entry_id=entry.entry_id,
-    )
+    except BaseException:
+        # No hook owns the client yet; HA does not detach it (auto_cleanup=False).
+        client.detach()
+        raise
+    runtime = AuthRuntime(hass, entry, guard, session)
+    # The one cleanup hook, registered with no await since the client was made,
+    # so a failed setup runs it too. Hooks pop last-first: this one runs last.
+    entry.async_on_unload(runtime.cleanup)
+    # Before the first await too: a stop that fires while setup is still running
+    # must retire the session, or the watcher started below outlives the stop.
+    runtime.listen_for_stop()
     auth_event("runtime.started", entry_id=entry.entry_id,
                rt_fingerprint=_token_fingerprint(entry.data[CONF_REFRESH_TOKEN]),
                auth_method=entry.data.get("auth_method", "existing_credentials"),
@@ -174,9 +162,7 @@ async def async_setup_entry(
         except WorksWithAlexaError:
             auth_event("identity.lookup_deferred", entry_id=entry.entry_id)
         else:
-            if email and persistence_active and accepted_credentials == tuple(
-                entry.data.get(key) for key in credential_fields
-            ):
+            if email and guard.is_current():
                 hass.config_entries.async_update_entry(
                     entry, data={**entry.data, CONF_DIRECTED_ID: account_id(email)}
                 )
@@ -192,20 +178,7 @@ async def async_setup_entry(
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    def request_reauth(err: AuthError) -> None:
-        entry.async_start_reauth(hass)
-
-    # A callback, so it runs on the event loop: a plain function or lambda is
-    # run in the executor, where cancelling the watcher task is not thread-safe.
-    @callback
-    def stop_watcher_on_shutdown(_event: Event) -> None:
-        session.stop_refresh_watcher()
-
-    session.start_refresh_watcher(request_reauth)
-    entry.async_on_unload(session.stop_refresh_watcher)
-    entry.async_on_unload(hass.bus.async_listen_once(
-        EVENT_HOMEASSISTANT_STOP, stop_watcher_on_shutdown
-    ))
+    session.start_refresh_watcher(runtime.request_reauth)
     event(_LOGGER, "entry.setup.completed", entry_id=entry.entry_id,
           selected_devices=len(coordinator.selected), selected_scenes=len(coordinator.selected_scenes))
     return True

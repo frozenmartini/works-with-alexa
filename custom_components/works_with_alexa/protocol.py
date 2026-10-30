@@ -51,6 +51,17 @@ class CommandError(WorksWithAlexaError):
     """A write was accepted by the transport but rejected by the device."""
 
 
+class CredentialSaveError(WorksWithAlexaError):
+    """Rotated credentials were committed to memory but could not be saved.
+
+    Not an auth or connection error: it must start no reauth and no token retry.
+    """
+
+
+class SessionRetiredError(WorksWithAlexaError):
+    """The session has been retired; it sends nothing further."""
+
+
 def raise_for_throttle(body: str) -> None:
     """Detect throttling, which does not use HTTP 429."""
     if any(marker in body for marker in THROTTLE_MARKERS):
