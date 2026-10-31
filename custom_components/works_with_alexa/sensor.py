@@ -22,8 +22,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity
-from .models import Endpoint, Feature, sensor_features
+from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
+from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,12 +36,12 @@ async def async_setup_entry(
     """Create one sensor per readable feature."""
     coordinator = entry.runtime_data
 
-    entities: list[WorksWithAlexaSensor] = []
-    for endpoint in coordinator.selected.values():
-        # Shared with the device picker, so what the picker offers and what this
-        # actually builds cannot drift apart.
-        for feature in sensor_features(endpoint):
-            entities.append(WorksWithAlexaSensor(coordinator, endpoint, feature))
+    # Shared with the device picker, so what the picker offers and what this
+    # actually builds cannot drift apart.
+    entities = [
+        WorksWithAlexaSensor(coordinator, endpoint, feature)
+        for endpoint, feature, _ in selected_entities(coordinator, "sensor")
+    ]
 
     _LOGGER.debug("Adding %d sensors", len(entities))
     async_add_entities(entities)

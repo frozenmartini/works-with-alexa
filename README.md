@@ -116,8 +116,9 @@ confirmed root-credential rejection requests interactive sign-in.
 ## Capability matching
 
 `features.py` centrally decides what the picker offers and which entities the
-platforms create; read-only sensors come from `models.sensor_features`, which it
-reuses. Manufacturer and accessory category do not restrict it:
+platforms create; read-only sensors follow the same rule, in the same file.
+Neither manufacturer nor accessory category restricts it, except that scene
+triggers yield nothing. The rules:
 
 - `power`/`toggle` with on and off commands → switch.
 - `mode` with `setMode` and advertised options → select, preserving Alexa's labels.
@@ -243,9 +244,8 @@ integration icon. No Python requirements beyond Home Assistant itself.
 Pure logic (parsing, classification, protocol handling, registration) carries no Home Assistant
 imports, so it is testable with the standard library alone.
 
-`features.py` is where the feature-to-entity rules live, with the read-only sensor rule in
-`models.sensor_features`. Change the rules there and not at a call site — the platforms, the
-device picker and the tests all read them.
+`features.py` is where the feature-to-entity rules live. Change the rules there and not at a call
+site — the platforms, the device picker and the tests all read them.
 
 The test suite is maintained alongside this repository rather than inside it, and runs against
 fixtures captured from a live account. It is not distributed with the integration.

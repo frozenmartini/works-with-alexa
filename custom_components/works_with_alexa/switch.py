@@ -18,8 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
-from .entity import WorksWithAlexaEntity
-from .features import switch_features
+from .entity import WorksWithAlexaEntity, selected_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,10 +30,10 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
 
-    entities: list[WorksWithAlexaSwitch] = []
-    for endpoint in coordinator.selected.values():
-        for feature in switch_features(endpoint):
-            entities.append(WorksWithAlexaSwitch(coordinator, endpoint, feature))
+    entities = [
+        WorksWithAlexaSwitch(coordinator, endpoint, feature)
+        for endpoint, feature, _ in selected_entities(coordinator, "switch")
+    ]
 
     _LOGGER.debug("Adding %d switches", len(entities))
     async_add_entities(entities)

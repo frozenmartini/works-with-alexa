@@ -31,57 +31,37 @@ FEATURE_LOCK = "lock"
 FEATURE_INVENTORY = "inventory"
 FEATURE_ACTION = "action"
 
-# Features that never become sensors even though they report a value. Every
-# endpoint on the account -- phones, apps, scene triggers -- carries
-# connectivity, so a sensor per reachability flag would drag all 60 non-devices
-# into the picker. Reachability is reported as an attribute instead.
-_NEVER_SENSORS = frozenset({FEATURE_CONNECTIVITY, FEATURE_ENDPOINT_HEALTH})
-
-# Features that are sensors even when writable. An action's property is its
-# *status* (IDLE / RUNNING); its operation performs the action rather than
-# setting that status, so reading and driving it are different entities. The
-# Roborock's Robot.Clean advertised `performAction` in one capture and no
-# operations in another (2026-09-13), so the reading must not depend on it.
-_ALWAYS_SENSORS = frozenset({FEATURE_ACTION})
-
 # Splits camelCase for the label fallback: "temperatureSensor" -> "temperature Sensor".
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 # The property name a feature type reports its current value under.
 #
-# Two naming conventions are accepted per feature. The Homebridge plugins'
-# query document selects the ``*Value``-suffixed names (``powerStateValue``,
-# ``toggleStateValue``, ``thermostatModeValue``) while the live captures in
-# ``ref/07``/``ref/08`` are written up with the bare names. The raw response
-# JSON was never committed, so rather than guess which the wire actually uses,
-# both are tried. See ``threads/002`` Q5 -- once a real capture settles it, the
-# losing spelling can be dropped.
+# The query document (``queries.py``) selects one spelling per property type
+# and ``name`` on every property, so these are the keys the wire carries;
+# ``_flatten_properties`` also files each value under its property name.
 _PRIMARY_PROPERTIES = {
-    FEATURE_POWER: ("powerStateValue", "powerState"),
-    FEATURE_MODE: ("modeValue", "mode"),
+    FEATURE_POWER: ("powerStateValue",),
+    FEATURE_MODE: ("modeValue",),
     FEATURE_RANGE: ("rangeValue",),
-    FEATURE_TOGGLE: ("toggleStateValue", "toggleState"),
+    FEATURE_TOGGLE: ("toggleStateValue",),
     FEATURE_THERMOSTAT: ("targetSetpoint", "value", "thermostatModeValue"),
     FEATURE_TEMPERATURE_SENSOR: ("temperature", "value"),
-    FEATURE_CONNECTIVITY: ("reachabilityStatusValue", "connectivity", "reachability"),
+    FEATURE_CONNECTIVITY: ("reachabilityStatusValue",),
     # Names below come from a schema introspection (2026-09-13), not a capture
     # write-up: `Lock.lockState`, `InventoryLevel.inventoryLevelValue`,
     # `ActionState.actionStateValue`.
-    FEATURE_LOCK: ("lockState", "lockStateValue"),
+    FEATURE_LOCK: ("lockState",),
     FEATURE_INVENTORY: ("inventoryLevelValue",),
     FEATURE_ACTION: ("actionStateValue",),
 }
 
-# Tried in order for feature types not listed above.
+# Tried in order after a type's own spellings, and alone for types not listed above.
 _PROPERTY_FALLBACK = (
     "powerStateValue",
-    "powerState",
     "modeValue",
-    "mode",
     "rangeValue",
     "toggleStateValue",
-    "toggleState",
     "targetSetpoint",
     "temperature",
     "value",
@@ -93,18 +73,6 @@ class ModeOption:
     """One selectable value of a ``mode`` feature."""
 
     value: str
-    friendly_name: str
-
-
-@dataclass(frozen=True, slots=True)
-class ActionOption:
-    """One action a feature can perform, or one target it can act on.
-
-    A vacuum's ``Robot.Clean`` offers actions Clean / Vacuum / Mop and targets
-    that are its rooms; ``Robot.Dock`` offers Dock / Empty and no targets.
-    """
-
-    id: str
     friendly_name: str
 
 
@@ -160,13 +128,14 @@ class Feature:
         ]
 
     @property
-    def ordered(self) -> bool:
+    def ordered(self) -> bool | None:
         """Whether mode options form a scale (Low..Turbo) or an unordered set.
 
         Only an ORDERED mode may be mapped to a fan percentage; an UNORDERED one
-        must stay a select.
+        must stay a select. ``None`` when the device does not say.
         """
-        return str(self.configuration.get("order", "")).upper() == "ORDERED"
+        order = str(self.configuration.get("order", "")).upper()
+        return {"ORDERED": True, "UNORDERED": False}.get(order)
 
     # --- range --------------------------------------------------------------
     @property
@@ -259,26 +228,6 @@ class Feature:
         """
         return [str(mode) for mode in self.configuration.get("supportedModes") or []]
 
-    # --- action -------------------------------------------------------------
-    @property
-    def action_states(self) -> list[str]:
-        """The request states an action accepts: START / STOP / PAUSE / RESUME.
-
-        Distinct from the *reported* status (IDLE / RUNNING / PAUSED / ...).
-        """
-        return [
-            str(state)
-            for state in _get(self.configuration, "action", "supportedStates") or []
-        ]
-
-    @property
-    def actions(self) -> list[ActionOption]:
-        return _action_options(_get(self.configuration, "action", "supportedActions"))
-
-    @property
-    def targets(self) -> list[ActionOption]:
-        return _action_options(_get(self.configuration, "target", "supportedTargets"))
-
 
 @dataclass(frozen=True, slots=True)
 class Endpoint:
@@ -348,44 +297,9 @@ class Endpoint:
         return None if is_sentinel else value
 
 
-def sensor_features(endpoint: Endpoint) -> list[Feature]:
-    """Features that become read-only entities.
-
-    A feature qualifies when it currently reports a value and is either
-    read-only or an action (whose value is a status, not a setting).
-    Features carrying no value would only ever be unknown, and
-    ``connectivity`` is deliberately excluded (see ``_NEVER_SENSORS``).
-    """
-    return [
-        feature
-        for feature in endpoint.features.values()
-        if feature.name not in _NEVER_SENSORS
-        and (
-            not feature.writable
-            or feature.name in _ALWAYS_SENSORS
-        )
-        and endpoint.live_value(feature) is not None
-    ]
-
-
-def is_controllable(endpoint: Endpoint) -> bool:
-    """Whether the central capability plan yields any writable entity."""
-    # Deferred import avoids a module cycle: features consumes these models.
-    from .features import entity_plan
-
-    return any(platform != "sensor" for platform in entity_plan(endpoint))
-
-
-def produces_entities(endpoint: Endpoint) -> bool:
-    """The picker offers exactly the endpoints that the platforms can import."""
-    from .features import entity_plan
-
-    return bool(entity_plan(endpoint))
-
-
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
     """Build an :class:`Endpoint` from one item of the bulk endpoints query."""
-    endpoint_id = raw.get("id") or raw.get("endpointId")
+    endpoint_id = raw.get("id")
     if not endpoint_id:
         return None
 
@@ -430,8 +344,6 @@ def _flatten_properties(raw: Any) -> dict[str, Any]:
     Properties arrive as a list resolved through GraphQL inline fragments, so a
     single feature may contribute several named values.
     """
-    if isinstance(raw, dict):
-        return dict(raw)
     flat: dict[str, Any] = {}
     for prop in raw or []:
         if not isinstance(prop, dict):
@@ -477,10 +389,6 @@ def _unwrap(value: Any) -> Any:
 
 def _text(value: Any) -> str | None:
     """Read a label that may be a bare string or a ``{value: {text: ...}}`` blob."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
     unwrapped = _unwrap(value)
     return unwrapped if isinstance(unwrapped, str) else None
 
@@ -491,18 +399,6 @@ def humanise(raw: str) -> str:
     for part in raw.replace("_", ".").split("."):
         words.extend(_CAMEL_BOUNDARY.sub(" ", part).split())
     return " ".join(word[:1].upper() + word[1:] for word in words) or raw
-
-
-def _action_options(raw: Any) -> list[ActionOption]:
-    """Read ``supportedActions`` / ``supportedTargets`` into labelled options."""
-    options: list[ActionOption] = []
-    for item in raw or []:
-        if not isinstance(item, dict) or item.get("id") in (None, ""):
-            continue
-        names = (_text(name) for name in item.get("friendlyNames") or [])
-        label = next((name for name in names if name), None) or str(item["id"])
-        options.append(ActionOption(id=str(item["id"]), friendly_name=label))
-    return options
 
 
 def _label(option: dict[str, Any]) -> str:

@@ -28,8 +28,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity
-from .features import SET_TARGET_SETPOINT, number_features, setpoint_properties
+from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
+from .features import SET_TARGET_SETPOINT
 from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,21 +65,21 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
 
+    # A bounded, writable range is a number; a thermostat's setpoints are one number
+    # each, raw. Each half of a range pair knows the other, so a write sends the
+    # other's pending value.
     entities: list[NumberEntity] = []
-    for endpoint in coordinator.selected.values():
-        # Bounded and writable; without bounds there is nothing sane to render a
-        # slider against.
-        for feature in number_features(endpoint):
+    setpoints: dict[tuple[str, str], WorksWithAlexaSetpoint] = {}
+    for endpoint, feature, prop in selected_entities(coordinator, "number"):
+        if prop is None:
             entities.append(WorksWithAlexaNumber(coordinator, endpoint, feature))
-        # A thermostat's setpoints, one number each, raw. Each half of a range
-        # pair knows the other, so a write sends the other's pending value.
-        setpoints: dict[str, WorksWithAlexaSetpoint] = {}
-        for feature, prop in setpoint_properties(endpoint):
-            setpoints[prop] = WorksWithAlexaSetpoint(coordinator, endpoint, feature, prop)
-        for prop, setpoint in setpoints.items():
-            if pair := _SETPOINT_PAIR.get(prop):
-                setpoint.sibling = setpoints.get(pair)
-        entities.extend(setpoints.values())
+        else:
+            setpoint = WorksWithAlexaSetpoint(coordinator, endpoint, feature, prop)
+            setpoints[(endpoint.endpoint_id, prop)] = setpoint
+            entities.append(setpoint)
+    for (endpoint_id, prop), setpoint in setpoints.items():
+        if pair := _SETPOINT_PAIR.get(prop):
+            setpoint.sibling = setpoints.get((endpoint_id, pair))
 
     _LOGGER.debug("Adding %d numbers", len(entities))
     async_add_entities(entities)

@@ -21,13 +21,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import WorksWithAlexaEntity
-from .features import (
-    SET_THERMOSTAT_MODE,
-    THERMOSTAT_MODE_PROPERTY,
-    select_features,
-    thermostat_mode_feature,
-)
+from .entity import WorksWithAlexaEntity, selected_entities
+from .features import SET_THERMOSTAT_MODE, THERMOSTAT_MODE_PROPERTY
 from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,12 +35,12 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
 
-    entities: list[SelectEntity] = []
-    for endpoint in coordinator.selected.values():
-        for feature in select_features(endpoint):
-            entities.append(WorksWithAlexaSelect(coordinator, endpoint, feature))
-        if (thermostat := thermostat_mode_feature(endpoint)) is not None:
-            entities.append(WorksWithAlexaThermostatMode(coordinator, endpoint, thermostat))
+    entities: list[SelectEntity] = [
+        WorksWithAlexaThermostatMode(coordinator, endpoint, feature)
+        if prop
+        else WorksWithAlexaSelect(coordinator, endpoint, feature)
+        for endpoint, feature, prop in selected_entities(coordinator, "select")
+    ]
 
     _LOGGER.debug("Adding %d selects", len(entities))
     async_add_entities(entities)
@@ -110,8 +105,6 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         mode = self.reading
-        if mode is None and (feature := self.feature) is not None:
-            mode = feature.property_value("thermostatModeValue")
         if mode is None:
             return None
         return str(mode) if str(mode) in self._attr_options else None

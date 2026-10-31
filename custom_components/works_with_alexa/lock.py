@@ -22,8 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import WorksWithAlexaEntity
-from .features import lock_feature
+from .entity import WorksWithAlexaEntity, selected_entities
 from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,11 +38,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[WorksWithAlexaLock] = []
-    for endpoint in coordinator.selected.values():
-        lock = lock_feature(endpoint)
-        if lock is not None:
-            entities.append(WorksWithAlexaLock(coordinator, endpoint, lock))
+    entities = [
+        WorksWithAlexaLock(coordinator, endpoint, feature)
+        for endpoint, feature, _ in selected_entities(coordinator, "lock")
+    ]
     _LOGGER.debug("Adding %d locks", len(entities))
     async_add_entities(entities)
 

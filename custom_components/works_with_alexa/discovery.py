@@ -5,14 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .features import SETPOINT_PROPERTIES, THERMOSTAT_MODE_PROPERTY
-from .models import Feature, humanise
-
-
-def _mode_order(feature: Feature) -> bool | None:
-    if feature.name != "mode":
-        return None
-    order = str(feature.configuration.get("order", "")).upper()
-    return {"ORDERED": True, "UNORDERED": False}.get(order)
+from .models import FEATURE_MODE, Feature, humanise
 
 
 # Exact feature labels or semantic instance suffixes only. Neither endpoint
@@ -71,7 +64,7 @@ def _role(feature: Feature, prop: str | None) -> str | None:
     if role == "oscillation_angle" and feature.name != "range":
         return None
     if role == "speed" and not (
-        feature.name == "range" or (feature.name == "mode" and _mode_order(feature) is True)
+        feature.name == "range" or (feature.name == FEATURE_MODE and feature.ordered is True)
     ):
         return None
     return role or ("mode" if feature.name == "mode" else None)
@@ -94,7 +87,7 @@ def feature_metadata(
         "label": feature.label,
         "operations": sorted(feature.operations),
         "writable": writable,
-        "ordered": _mode_order(feature),
+        "ordered": feature.ordered if feature.name == FEATURE_MODE else None,
         "property": prop,
     }
     if (role := _role(feature, prop)) is not None:

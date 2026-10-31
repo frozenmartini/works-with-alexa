@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from .features import numbered_choices
+
 
 @dataclass(frozen=True)
 class AlexaScene:
@@ -11,10 +13,7 @@ class AlexaScene:
 
 def scene_choices(scenes: dict[str, AlexaScene]) -> dict[str, str]:
     """Stable, sorted labels; duplicate names remain individually selectable."""
-    choices: dict[str, str] = {}
-    seen: dict[str, int] = {}
-    for scene in sorted(scenes.values(), key=lambda s: (s.name.casefold(), s.automation_id)):
-        seen[scene.name] = seen.get(scene.name, 0) + 1
-        count = seen[scene.name]
-        choices[scene.automation_id] = scene.name if count == 1 else f"{scene.name} #{count}"
-    return choices
+    return numbered_choices(
+        (scene.name.casefold(), scene.automation_id, scene.name)
+        for scene in scenes.values()
+    )

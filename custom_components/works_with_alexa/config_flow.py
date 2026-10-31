@@ -34,7 +34,7 @@ from .const import (
     CONF_MAC_DMS, CONF_REFRESH_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_DOMAIN,
     DEFAULT_SCAN_INTERVAL, DOMAIN, MIN_SCAN_INTERVAL, SUPPORTED_DOMAINS,
 )
-from .models import produces_entities, is_controllable
+from .features import endpoint_choices
 from .scenes import scene_choices
 from .protocol import ApiConnectionError, AuthError, WorksWithAlexaError
 
@@ -50,38 +50,6 @@ def checkbox_selector(choices: dict[str, str]) -> SelectSelector:
             mode=SelectSelectorMode.LIST,
         )
     )
-
-
-def endpoint_choices(endpoints: dict[str, Any]) -> dict[str, str]:
-    """Endpoint id -> label, for the device picker.
-
-    Sorted by the name the user sees, since the ids are opaque. Endpoints
-    yielding only sensors are marked read-only; capability rules decide this.
-    """
-    labelled: list[tuple[str, str, str]] = []
-    seen: dict[str, int] = {}
-    for endpoint in endpoints.values():
-        # Most of an Alexa account is not devices -- Echo speakers, phone apps,
-        # scene triggers. Offering an endpoint that yields nothing would be an
-        # invitation to tick it and get an empty device.
-        if endpoint.display_category == "SCENE_TRIGGER" or not produces_entities(endpoint):
-            continue
-        # Sort on the stripped name: some names on a real account carry leading
-        # whitespace, which would otherwise sort them ahead of everything.
-        name = endpoint.friendly_name.strip()
-        label = name
-        if endpoint.manufacturer:
-            label = f"{label} ({endpoint.manufacturer})"
-        if not is_controllable(endpoint):
-            label = f"{label} - read-only"
-        # Names are not unique on an Alexa account. Two identical rows of
-        # checkboxes are unpickable, so disambiguate the repeats.
-        seen[label] = seen.get(label, 0) + 1
-        if seen[label] > 1:
-            label = f"{label} #{seen[label]}"
-        labelled.append((name.lower(), endpoint.endpoint_id, label))
-
-    return {endpoint_id: label for _, endpoint_id, label in sorted(labelled)}
 
 
 class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):

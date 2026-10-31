@@ -23,7 +23,7 @@ from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import event
 from .discovery import feature_metadata
-from .features import entity_name
+from .features import entities_of, entity_name
 from .models import Endpoint, Feature
 from .protocol import WorksWithAlexaError
 
@@ -41,6 +41,17 @@ TEMPERATURE_UNITS = {
     "FAHRENHEIT": UnitOfTemperature.FAHRENHEIT,
     "KELVIN": UnitOfTemperature.KELVIN,
 }
+
+
+def selected_entities(
+    coordinator: WorksWithAlexaCoordinator, platform: str,
+) -> list[tuple[Endpoint, Feature, str | None]]:
+    """Every raw entity of one platform across the selected endpoints, in setup order."""
+    return [
+        (endpoint, entry.feature, entry.prop)
+        for endpoint in coordinator.selected.values()
+        for entry in entities_of(endpoint, platform)
+    ]
 
 
 def _same_value(reported: Any, assumed: Any) -> bool:
