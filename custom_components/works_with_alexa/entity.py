@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -22,6 +23,7 @@ from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import event
 from .discovery import feature_metadata
+from .features import entity_name
 from .models import Endpoint, Feature
 from .protocol import WorksWithAlexaError
 
@@ -32,8 +34,13 @@ _LOGGER = logging.getLogger(__name__)
 # silently ignored heals itself rather than showing a lie indefinitely.
 OPTIMISTIC_TIMEOUT = 30.0
 
-# Distinguishes "assume nothing" from "assume None", which is a real state.
-_UNSET: Any = object()
+# ``thermostat`` and ``temperatureSensor`` declare their scale explicitly; a bare
+# ``range`` feature does not, even when its unit is "Degrees" (ref/07, Q3).
+TEMPERATURE_UNITS = {
+    "CELSIUS": UnitOfTemperature.CELSIUS,
+    "FAHRENHEIT": UnitOfTemperature.FAHRENHEIT,
+    "KELVIN": UnitOfTemperature.KELVIN,
+}
 
 
 def _same_value(reported: Any, assumed: Any) -> bool:
@@ -62,29 +69,31 @@ class _OptimisticState:
 
 
 class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
-    """One feature of one endpoint."""
+    """One feature of one endpoint, or one property of that feature, as Home Assistant sees it."""
 
     _attr_has_entity_name = True
     _wwa_operations: frozenset[str] = frozenset()
-    _wwa_property: str | None = None
 
     def __init__(
         self,
         coordinator: WorksWithAlexaCoordinator,
         endpoint: Endpoint,
         feature: Feature,
+        prop: str | None = None,
     ) -> None:
         super().__init__(coordinator)
         self._endpoint_id = endpoint.endpoint_id
-        self._feature_key = feature.key
-        self._feature_name = feature.name
-        self._instance = feature.instance
-        self._discovery_feature = feature
-        # feature key -> latest pending state
-        self._optimistic: dict[str, _OptimisticState] = {}
-        self._cancel_optimistic_expiry: Callable[[], None] | None = None
+        # The setup-time feature: its name and instance go on the wire, and it
+        # stands in for attributes while the endpoint is missing from a poll.
+        self._source = feature
+        self._prop = prop
+        self._key = f"{feature.key}/{prop}" if prop else feature.key
+        self._pending: _OptimisticState | None = None
+        self._cancel_expiry: Callable[[], None] | None = None
+        self._removed = False
 
-        self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}"
+        self._attr_unique_id = f"{endpoint.endpoint_id}:{self._key}"
+        self._attr_name = entity_name(feature, prop)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, endpoint.endpoint_id)},
             name=endpoint.friendly_name,
@@ -102,7 +111,7 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         endpoint = self.endpoint
         if endpoint is None:
             return None
-        return endpoint.features.get(self._feature_key)
+        return endpoint.features.get(self._source.key)
 
     @property
     def available(self) -> bool:
@@ -119,144 +128,110 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         only produces a failed command with a clear error.
         """
         endpoint = self.endpoint
-        feature = self.feature or self._discovery_feature
+        feature = self.feature or self._source
         attrs: dict[str, Any] = {
             "wwa_feature": feature_metadata(
                 feature,
                 writable=bool(self._wwa_operations) and self._wwa_operations <= feature.operations,
-                prop=self._wwa_property,
+                prop=self._prop,
             )
         }
         if endpoint is not None and endpoint.reachable is not None:
             attrs["reachable"] = endpoint.reachable
         return attrs
 
-    def _reported(self, key: str) -> Any:
-        """What the endpoint currently reports for an optimistic key.
-
-        A key is either a feature key (``range/Fan.Speed``) or a feature key
-        with a property appended (``thermostat/targetSetpoint``). Feature keys
-        carry slashes of their own, so the whole key is tried as a feature
-        first and only split when it is not one.
-        """
-        endpoint = self.endpoint
-        if endpoint is None:
-            return None
-        feature = endpoint.features.get(key)
-        if feature is not None:
-            return endpoint.live_value(feature)
-        base, _, prop = key.rpartition("/")
-        feature = endpoint.features.get(base) if base else None
-        return feature.property_value(prop) if feature is not None else None
-
-    def feature_property(self, prop: str) -> Any:
-        """One named property of this entity's feature, assumption first.
-
-        The thermostat sub-entities are a property of a shared feature rather
-        than a feature of their own, so they need this instead of
-        :meth:`feature_value` to see their own optimistic writes.
-        """
-        assumed = self._optimistic.get(f"{self._feature_key}/{prop}")
-        if assumed is not None and time.monotonic() < assumed.deadline:
-            return assumed.value
-        feature = self.feature
-        return feature.property_value(prop) if feature is not None else None
-
-    def feature_value(self, key: str | None) -> Any:
-        """Value of one feature, preferring an unconfirmed local write.
+    @property
+    def reading(self) -> Any:
+        """This entity's value, preferring an unconfirmed local write.
 
         Reads go through here rather than straight to the endpoint so an
         optimistic value shows immediately after a command, instead of the UI
         snapping back to the old state until the next poll lands.
         """
-        if key is None:
-            return None
-        assumed = self._optimistic.get(key)
-        if assumed is not None and time.monotonic() < assumed.deadline:
-            return assumed.value
+        pending = self._pending
+        if pending is not None and time.monotonic() < pending.deadline:
+            return pending.value
+        return self._reported()
 
-        endpoint = self.endpoint
-        if endpoint is None:
-            return None
-        feature = endpoint.features.get(key)
+    def _reported(self) -> Any:
+        """What the endpoint currently reports for this entity.
+
+        A whole feature reads with the power-off sentinel filtered out. A
+        property of a feature (the thermostat sub-entities) reads that one
+        property, unfiltered.
+        """
+        feature = self.feature
         if feature is None:
             return None
-        return endpoint.live_value(feature)
+        if self._prop:
+            return feature.property_value(self._prop)
+        return self.endpoint.live_value(feature)
 
-    @property
-    def live_value(self) -> Any:
-        """Current value with the power-off sentinel filtered out."""
-        return self.feature_value(self._feature_key)
-
-    def _assume(self, key: str, value: Any) -> _OptimisticState:
+    def _assume(self, value: Any) -> _OptimisticState:
         """Hold a value locally until the device confirms it or it goes stale."""
-        record = _OptimisticState(value, time.monotonic() + OPTIMISTIC_TIMEOUT, self._optimistic.get(key))
-        self._optimistic[key] = record
-        self._schedule_optimistic_expiry()
-        event(_LOGGER, "optimistic.applied", feature=key)
+        record = _OptimisticState(value, time.monotonic() + OPTIMISTIC_TIMEOUT, self._pending)
+        self._pending = record
+        self._schedule_expiry()
+        event(_LOGGER, "optimistic.applied", feature=self._key)
         return record
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.async_on_remove(self._cancel_optimistic_timer)
+        self.async_on_remove(self._on_removed)
 
     @callback
-    def _cancel_optimistic_timer(self) -> None:
-        if self._cancel_optimistic_expiry is not None:
-            self._cancel_optimistic_expiry()
-            self._cancel_optimistic_expiry = None
+    def _on_removed(self) -> None:
+        # A write still in flight can fail after this and roll back; it must
+        # not arm a timer that nothing would cancel.
+        self._removed = True
+        self._cancel_timer()
 
     @callback
-    def _schedule_optimistic_expiry(self) -> None:
-        """Revert stale assumptions even when the polling interval is longer."""
-        self._cancel_optimistic_timer()
-        if self._optimistic:
-            next_expiry = min(state.deadline for state in self._optimistic.values())
-            self._cancel_optimistic_expiry = async_call_later(
-                self.hass, max(0.0, next_expiry - time.monotonic()), self._expire_optimistic
+    def _cancel_timer(self) -> None:
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
+
+    @callback
+    def _schedule_expiry(self) -> None:
+        """Revert a stale assumption even when the polling interval is longer."""
+        self._cancel_timer()
+        if self._pending is not None and not self._removed:
+            self._cancel_expiry = async_call_later(
+                self.hass, max(0.0, self._pending.deadline - time.monotonic()), self._expire
             )
 
     @callback
-    def _expire_optimistic(self, _now: Any) -> None:
-        self._cancel_optimistic_expiry = None
+    def _expire(self, _now: Any) -> None:
+        self._cancel_expiry = None
         now = time.monotonic()
-        expired = [key for key, state in self._optimistic.items() if now >= state.deadline]
-        for key in expired:
-            self._optimistic.pop(key)
-            event(_LOGGER, "optimistic.expired", feature=key)
-        self._schedule_optimistic_expiry()
+        expired = self._pending is not None and now >= self._pending.deadline
+        if expired:
+            self._pending = None
+            event(_LOGGER, "optimistic.expired", feature=self._key)
+        self._schedule_expiry()
         if expired:
             self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Drop assumptions the device has caught up with, or that went stale."""
-        endpoint = self.endpoint
+        """Drop an assumption the device has caught up with, or that went stale."""
         now = time.monotonic()
-        for key, state in list(self._optimistic.items()):
-            confirmed = endpoint is not None and _same_value(self._reported(key), state.value)
-            if confirmed or now >= state.deadline:
-                del self._optimistic[key]
-                event(_LOGGER, "optimistic.confirmed" if confirmed else "optimistic.expired", feature=key)
-        self._schedule_optimistic_expiry()
+        record = self._pending
+        if record is not None:
+            confirmed = _same_value(self._reported(), record.value)
+            if confirmed or now >= record.deadline:
+                self._pending = None
+                event(_LOGGER, "optimistic.confirmed" if confirmed else "optimistic.expired", feature=self._key)
+        self._schedule_expiry()
         super()._handle_coordinator_update()
 
-    async def async_control(
-        self,
-        operation: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        feature_name: str | None = None,
-        instance: str | None = None,
-        assume: Any = _UNSET,
-        assume_property: str | None = None,
-    ) -> None:
+    async def async_control(self, operation: str, payload: dict[str, Any] | None, assume: Any) -> None:
         """Drive this feature, then refresh so the UI reflects the device.
 
         ``assume`` is the value this command is expected to produce, held as the
         entity's state until a poll confirms it or it goes stale, so the UI does
-        not lag a cycle behind. ``assume_property`` names a property of the
-        feature rather than the feature itself, for the thermostat sub-entities.
+        not lag a cycle behind.
 
         The assumption is applied **before** the request leaves, not after it
         lands. Amazon's round trip is a few hundred milliseconds, and anything
@@ -268,42 +243,31 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         Capability classification happens centrally in features.py; each platform
         exposes only the commands it supports.
         """
-        target_key = self._feature_key
-        if feature_name:
-            target_key = f"{feature_name}/{instance}" if instance else feature_name
-        if assume_property:
-            target_key = f"{target_key}/{assume_property}"
-
-        if assume is not _UNSET:
-            assumed_record = self._assume(target_key, assume)
-            self.async_write_ha_state()
+        record = self._assume(assume)
+        self.async_write_ha_state()
 
         try:
             await self.coordinator.session.async_set_feature(
                 self._endpoint_id,
-                feature_name or self._feature_name,
+                self._source.name,
                 operation,
-                instance=instance if feature_name else self._instance,
+                instance=self._source.instance,
                 payload=payload,
             )
         except WorksWithAlexaError as err:
-            if assume is not _UNSET:
-                assumed_record.rejected = True
-                if self._optimistic.get(target_key) is assumed_record:
-                    # Older failures must neither overwrite a newer command nor
-                    # be resurrected if the newer command also fails later.
-                    previous = assumed_record.previous
-                    while previous is not None and previous.rejected:
-                        previous = previous.previous
-                    if previous is None:
-                        self._optimistic.pop(target_key, None)
-                    else:
-                        self._optimistic[target_key] = previous
-                    self._schedule_optimistic_expiry()
-                    event(_LOGGER, "optimistic.rolled_back", feature=target_key)
-                    self.async_write_ha_state()
+            record.rejected = True
+            if self._pending is record:
+                # Older failures must neither overwrite a newer command nor
+                # be resurrected if the newer command also fails later.
+                previous = record.previous
+                while previous is not None and previous.rejected:
+                    previous = previous.previous
+                self._pending = previous
+                self._schedule_expiry()
+                event(_LOGGER, "optimistic.rolled_back", feature=self._key)
+                self.async_write_ha_state()
             raise HomeAssistantError(
-                f"{operation} failed on {self._feature_key}: {err}"
+                f"{operation} failed on {self._source.key}: {err}"
             ) from err
 
         await self.coordinator.async_request_refresh()

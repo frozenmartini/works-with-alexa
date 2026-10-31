@@ -51,7 +51,6 @@ async def async_setup_entry(
 class WorksWithAlexaLock(WorksWithAlexaEntity, LockEntity):
     """One lock feature."""
 
-    _attr_name = None  # the lock is the device
     _wwa_operations = frozenset({"lock", "unlock"})
 
     def __init__(
@@ -61,10 +60,12 @@ class WorksWithAlexaLock(WorksWithAlexaEntity, LockEntity):
         feature: Feature,
     ) -> None:
         super().__init__(coordinator, endpoint, feature)
+        # After the base, which names every entity: the lock is the device.
+        self._attr_name = None
 
     @property
     def _state(self) -> str | None:
-        value = self.live_value
+        value = self.reading
         return None if value is None else str(value).upper()
 
     @property
@@ -86,7 +87,7 @@ class WorksWithAlexaLock(WorksWithAlexaEntity, LockEntity):
         return None if state is None else state == STATE_JAMMED
 
     async def async_lock(self, **kwargs: Any) -> None:
-        await self.async_control("lock", assume=STATE_LOCKED)
+        await self.async_control("lock", payload=None, assume=STATE_LOCKED)
 
     async def async_unlock(self, **kwargs: Any) -> None:
-        await self.async_control("unlock", assume=STATE_UNLOCKED)
+        await self.async_control("unlock", payload=None, assume=STATE_UNLOCKED)

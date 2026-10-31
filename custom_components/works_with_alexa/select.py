@@ -28,7 +28,7 @@ from .features import (
     select_features,
     thermostat_mode_feature,
 )
-from .models import Endpoint, Feature, humanise
+from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +63,6 @@ class WorksWithAlexaSelect(WorksWithAlexaEntity, SelectEntity):
         feature: Feature,
     ) -> None:
         super().__init__(coordinator, endpoint, feature)
-        self._attr_name = feature.label
         # Labels are what the user picks; values are what the API accepts. Alexa
         # does not promise labels are unique, so keep the first of any duplicate
         # rather than letting a later one silently shadow it.
@@ -76,7 +75,7 @@ class WorksWithAlexaSelect(WorksWithAlexaEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Selected label, or None when the device reports the off sentinel."""
-        value = self.live_value
+        value = self.reading
         if value is None:
             return None
         return self._label_of.get(str(value))
@@ -98,7 +97,6 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
     """
 
     _wwa_operations = frozenset({SET_THERMOSTAT_MODE})
-    _wwa_property = THERMOSTAT_MODE_PROPERTY
 
     def __init__(
         self,
@@ -106,20 +104,13 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
         endpoint: Endpoint,
         feature: Feature,
     ) -> None:
-        super().__init__(coordinator, endpoint, feature)
-        self._attr_unique_id = (
-            f"{endpoint.endpoint_id}:{feature.key}/{THERMOSTAT_MODE_PROPERTY}"
-        )
-        self._attr_name = humanise(THERMOSTAT_MODE_PROPERTY)
+        super().__init__(coordinator, endpoint, feature, THERMOSTAT_MODE_PROPERTY)
         self._attr_options = list(feature.supported_modes)
 
     @property
     def current_option(self) -> str | None:
-        feature = self.feature
-        if feature is None:
-            return None
-        mode = self.feature_property(THERMOSTAT_MODE_PROPERTY)
-        if mode is None:
+        mode = self.reading
+        if mode is None and (feature := self.feature) is not None:
             mode = feature.property_value("thermostatModeValue")
         if mode is None:
             return None
@@ -130,5 +121,4 @@ class WorksWithAlexaThermostatMode(WorksWithAlexaEntity, SelectEntity):
             SET_THERMOSTAT_MODE,
             {THERMOSTAT_MODE_PROPERTY: {"value": option}},
             assume=option,
-            assume_property=THERMOSTAT_MODE_PROPERTY,
         )

@@ -15,6 +15,7 @@ ecobee on 2026-10-21.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -27,17 +28,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import WorksWithAlexaEntity
+from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity
 from .features import SET_TARGET_SETPOINT, number_features, setpoint_properties
-from .models import Endpoint, Feature, humanise
+from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
-
-_SCALE_UNITS = {
-    "CELSIUS": UnitOfTemperature.CELSIUS,
-    "FAHRENHEIT": UnitOfTemperature.FAHRENHEIT,
-    "KELVIN": UnitOfTemperature.KELVIN,
-}
 
 # Alexa reports no bounds for a setpoint (the schema has an allowed-range
 # property, but the ecobee does not send it), so these bound the slider, not
@@ -53,6 +48,16 @@ _SETPOINT_BOUNDS = {
 _SETPOINT_PAIR = {"lowerSetpoint": "upperSetpoint", "upperSetpoint": "lowerSetpoint"}
 
 
+def _float_or_none(value: Any) -> float | None:
+    """A reading as a float, or None when there is none or it is not numeric."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: WorksWithAlexaConfigEntry,
@@ -66,9 +71,15 @@ async def async_setup_entry(
         # slider against.
         for feature in number_features(endpoint):
             entities.append(WorksWithAlexaNumber(coordinator, endpoint, feature))
-        # A thermostat's setpoints, one number each, raw.
+        # A thermostat's setpoints, one number each, raw. Each half of a range
+        # pair knows the other, so a write sends the other's pending value.
+        setpoints: dict[str, WorksWithAlexaSetpoint] = {}
         for feature, prop in setpoint_properties(endpoint):
-            entities.append(WorksWithAlexaSetpoint(coordinator, endpoint, feature, prop))
+            setpoints[prop] = WorksWithAlexaSetpoint(coordinator, endpoint, feature, prop)
+        for prop, setpoint in setpoints.items():
+            if pair := _SETPOINT_PAIR.get(prop):
+                setpoint.sibling = setpoints.get(pair)
+        entities.extend(setpoints.values())
 
     _LOGGER.debug("Adding %d numbers", len(entities))
     async_add_entities(entities)
@@ -87,7 +98,6 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
         feature: Feature,
     ) -> None:
         super().__init__(coordinator, endpoint, feature)
-        self._attr_name = feature.label
         self._attr_native_min_value = feature.minimum
         self._attr_native_max_value = feature.maximum
         self._attr_native_step = feature.step or 1
@@ -97,13 +107,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Current setpoint, or None while the device reports the off sentinel."""
-        value = self.live_value
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:
         # The API echoes back what it accepted; send an int where the step is
@@ -136,35 +140,26 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
         feature: Feature,
         prop: str,
     ) -> None:
-        super().__init__(coordinator, endpoint, feature)
-        self._prop = prop
-        self._wwa_property = prop
-        self._attr_unique_id = f"{endpoint.endpoint_id}:{feature.key}/{prop}"
-        self._attr_name = humanise(prop)
+        super().__init__(coordinator, endpoint, feature, prop)
         self._scale = (feature.property_scale(prop) or feature.scale or "CELSIUS").upper()
-        unit = _SCALE_UNITS.get(self._scale, UnitOfTemperature.CELSIUS)
+        unit = TEMPERATURE_UNITS.get(self._scale, UnitOfTemperature.CELSIUS)
         self._attr_native_unit_of_measurement = unit
         low, high, step = _SETPOINT_BOUNDS.get(unit, _SETPOINT_BOUNDS[UnitOfTemperature.CELSIUS])
         self._attr_native_min_value = low
         self._attr_native_max_value = high
         self._attr_native_step = step
+        self.sibling: WorksWithAlexaSetpoint | None = None
 
     @property
     def native_value(self) -> float | None:
-        value = self.feature_property(self._prop)
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:
         payload = {self._prop: {"value": value, "scale": self._scale}}
-        pair = _SETPOINT_PAIR.get(self._prop)
-        feature = self.feature
-        if pair and feature is not None and (current := feature.property_value(pair)) is not None:
-            payload[pair] = {"value": float(current), "scale": self._scale}
+        # The other half is read through its own entity, so an unconfirmed
+        # write to it is sent, not the polled value it replaced.
+        if self.sibling is not None and (current := self.sibling.native_value) is not None:
+            payload[self.sibling._prop] = {"value": current, "scale": self._scale}
         await self.async_control(
-            SET_TARGET_SETPOINT, payload, assume=value, assume_property=self._prop
+            SET_TARGET_SETPOINT, payload, assume=value
         )

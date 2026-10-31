@@ -137,6 +137,11 @@ def number_features(endpoint: Endpoint) -> list[Feature]:
     ]
 
 
+def entity_name(feature: Feature, prop: str | None = None) -> str:
+    """The Home Assistant name of one feature, or of one property of it."""
+    return humanise(prop) if prop else feature.label
+
+
 def entity_plan(endpoint: Endpoint) -> dict[str, list[str]]:
     """Platform -> entity names the raw layer yields. What the picker promises.
 
@@ -146,16 +151,16 @@ def entity_plan(endpoint: Endpoint) -> dict[str, list[str]]:
     plan: dict[str, list[str]] = {}
     if is_lock(endpoint):
         plan["lock"] = [endpoint.friendly_name.strip()]
-    selects = [feature.label for feature in select_features(endpoint)]
-    if thermostat_mode_feature(endpoint) is not None:
-        selects.append(humanise(THERMOSTAT_MODE_PROPERTY))
-    numbers = [feature.label for feature in number_features(endpoint)]
-    numbers.extend(humanise(name) for _, name in setpoint_properties(endpoint))
+    selects = [entity_name(feature) for feature in select_features(endpoint)]
+    if (thermostat := thermostat_mode_feature(endpoint)) is not None:
+        selects.append(entity_name(thermostat, THERMOSTAT_MODE_PROPERTY))
+    numbers = [entity_name(feature) for feature in number_features(endpoint)]
+    numbers.extend(entity_name(feature, name) for feature, name in setpoint_properties(endpoint))
     for platform, names in (
-        ("switch", [feature.label for feature in switch_features(endpoint)]),
+        ("switch", [entity_name(feature) for feature in switch_features(endpoint)]),
         ("select", selects),
         ("number", numbers),
-        ("sensor", [feature.label for feature in sensor_features(endpoint)]),
+        ("sensor", [entity_name(feature) for feature in sensor_features(endpoint)]),
     ):
         if names:
             plan[platform] = names

@@ -201,7 +201,7 @@ thermostat feature has no assumed temperature role. Consumers should identify
 an entity through the HA registry and use `property` to distinguish thermostat
 children, rather than treating the feature key alone as an entity identifier.
 
-The dictionary merges with existing attributes such as `reachable`, `feature`,
+The dictionary merges with existing attributes such as `reachable`
 and `reported_unit`. It contains no credentials or raw account payloads. It does
 not change entity unique IDs, device grouping, select labels, numeric bounds,
 units, or commands. If an endpoint disappears, its entities become unavailable, and

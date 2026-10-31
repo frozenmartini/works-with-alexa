@@ -18,10 +18,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
-from .coordinator import WorksWithAlexaCoordinator
 from .entity import WorksWithAlexaEntity
 from .features import switch_features
-from .models import FEATURE_POWER, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,18 +45,9 @@ class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
 
     _wwa_operations = frozenset({"turnOn", "turnOff"})
 
-    def __init__(
-        self,
-        coordinator: WorksWithAlexaCoordinator,
-        endpoint: Endpoint,
-        feature: Feature,
-    ) -> None:
-        super().__init__(coordinator, endpoint, feature)
-        self._attr_name = "Power" if feature.name == FEATURE_POWER else feature.label
-
     @property
     def is_on(self) -> bool | None:
-        value = self.live_value
+        value = self.reading
         if value is None:
             return None
         return str(value).upper() == "ON"
