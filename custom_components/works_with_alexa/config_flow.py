@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import logging
 from typing import Any
 
@@ -24,6 +26,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .auth_runtime import new_session
 from .auth_watch import auth_event, fingerprint
 from .enrollment import DirectEnrollment, InvalidRedirect
 from .dev_logging import async_enable_evidence_logging, event
@@ -32,7 +35,7 @@ from .signin_image import landing_image_uri
 from .const import (
     CONF_DEVICE_SERIAL, CONF_DIRECTED_ID, CONF_INCLUDE_ENDPOINTS, CONF_INCLUDE_SCENES,
     CONF_MAC_DMS, CONF_REFRESH_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_DOMAIN,
-    DEFAULT_SCAN_INTERVAL, DOMAIN, MIN_SCAN_INTERVAL, SUPPORTED_DOMAINS,
+    DEFAULT_SCAN_INTERVAL, DOMAIN, MARKETPLACES, MIN_SCAN_INTERVAL,
 )
 from .features import endpoint_choices
 from .scenes import scene_choices
@@ -65,6 +68,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._email: str | None = None
         self._choices: dict[str, str] = {}
         self._scene_choices: dict[str, str] = {}
+        self._endpoints: dict[str, Any] | None = None
         self._direct_enrollment: DirectEnrollment | None = None
         self._direct_credentials: dict[str, Any] | None = None
         self._legacy_reauth: tuple[dict[str, Any], str, dict[str, Any]] | None = None
@@ -100,7 +104,7 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_direct_redirect()
         fields = {
             vol.Required(CONF_URL, default=self._config.get(CONF_URL, DEFAULT_DOMAIN)):
-                vol.In(SUPPORTED_DOMAINS),
+                vol.In(list(MARKETPLACES)),
         }
         # Reauthentication replaces credentials only; the interval lives in the
         # entry's options and is changed there, so it is not offered here.
@@ -168,11 +172,15 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         """Verify the account before creating or replacing an entry."""
         credentials = self._direct_credentials
         self._config["auth_method"] = "direct_browser"
-        report = credentials["registration_expiry_report"]
-        self._config["enrolled_at"] = report["received_at_utc"]
-        email = await self._async_verify(credentials)
-        if not email:
-            raise AuthError("Amazon did not identify the signed-in account")
+        self._config["enrolled_at"] = credentials["enrolled_at"]
+        # One session checks the account and lists the devices; leaving the
+        # block releases it and copies any rotation back into the credentials.
+        async with self._signed_in(credentials) as session:
+            email = await session.async_get_account_email()
+            if not email:
+                raise AuthError("Amazon did not identify the signed-in account")
+            if self.source != SOURCE_REAUTH:
+                await self._async_list(session)
         auth_event("signin.verified", method="direct_browser",
                    rt_fingerprint=fingerprint(credentials["refresh_token"]),
                    mfa_observed=self._config.get("mfa_observed", "unknown"))
@@ -264,7 +272,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         }
         old_credentials[CONF_MAC_DMS] = before.get(CONF_MAC_DMS, {})
         try:
-            email = await self._async_verify(old_credentials)
+            async with self._signed_in(old_credentials) as session:
+                email = await session.async_get_account_email()
         except AuthError as err:
             if not err.root_token_rejected:
                 raise ApiConnectionError("The previous account could not be verified; retry") from err
@@ -272,16 +281,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         finally:
             # Verification can rotate the old registration even if its web
             # session fails afterward. Do not overwrite a concurrent sign-in.
+            rotated = {
+                **before, CONF_REFRESH_TOKEN: old_credentials[CONF_REFRESH_TOKEN],
+                CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
+            }
             if dict(entry.data) == before:
-                self.hass.config_entries.async_update_entry(entry, data={
-                    **entry.data,
-                    CONF_REFRESH_TOKEN: old_credentials[CONF_REFRESH_TOKEN],
-                    CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
-                })
-        if dict(entry.data) != {
-            **before, CONF_REFRESH_TOKEN: old_credentials[CONF_REFRESH_TOKEN],
-            CONF_MAC_DMS: old_credentials[CONF_MAC_DMS],
-        }:
+                self.hass.config_entries.async_update_entry(entry, data=rotated)
+        if dict(entry.data) != rotated:
             raise WorksWithAlexaError("The entry changed during account verification; retry sign-in")
         if not email:
             return None
@@ -320,16 +326,13 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
         A form cannot carry its own buttons, but menu options are buttons, so
         the bulk choices live here and the checkbox list sits behind "choose".
         """
-        try:
-            endpoints = await self._async_endpoints(self._credentials)
-        except WorksWithAlexaError as err:
+        if self._endpoints is None:
             # The credentials are already proven, so a listing failure is not
             # worth discarding the login over: take everything and let the user
             # narrow it from the options flow later.
-            _LOGGER.warning("Could not list devices to choose from: %s", err)
             return self._create_entry()
 
-        self._choices = endpoint_choices(endpoints)
+        self._choices = endpoint_choices(self._endpoints)
         if not self._choices:
             return await self.async_step_scenes()
 
@@ -423,58 +426,49 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
                    rt_fingerprint=fingerprint(credentials["refresh_token"]))
         return self.async_create_entry(title=title, data=data, options=options)
 
-    async def _async_session(self, credentials: dict[str, Any]) -> Any:
-        """A live session built from the credentials."""
-        from homeassistant.helpers.aiohttp_client import async_create_clientsession
+    @asynccontextmanager
+    async def _signed_in(self, credentials: dict[str, Any]) -> AsyncIterator[Any]:
+        """A live session built from the credentials, released on leaving.
 
-        from .api import AmazonAlexaSession
-
-        session = AmazonAlexaSession(
-            async_create_clientsession(self.hass, auto_cleanup=False, cookie_jar=aiohttp.CookieJar(),
-                                       timeout=aiohttp.ClientTimeout(total=60)),
+        Raises :class:`AuthError` if the credentials are not accepted, or
+        :class:`WorksWithAlexaError` if Amazon could not be reached. On every
+        path the session is released first, then any rotation is copied back
+        into ``credentials`` -- a reply that landed during a cancelled setup or
+        a cancelled release is kept.
+        """
+        session = new_session(
+            self.hass,
             domain=credentials.get(CONF_URL, self._config[CONF_URL]),
-            device_serial=credentials["device_serial"],
             refresh_token=credentials["refresh_token"],
             mac_dms=credentials["mac_dms"],
         )
         try:
             await session.async_setup()
-        except BaseException:
-            # Settles and detaches; never raises, so the original error survives.
-            await session.async_release()
-            raise
+            yield session
         finally:
-            # After the release: a reply that landed during a cancelled setup is kept.
-            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
-        return session
-
-    async def _async_verify(self, credentials: dict[str, Any]) -> str | None:
-        """Drive a live session from the credentials and return the account email.
-
-        Raises :class:`AuthError` if the credentials are not accepted, or
-        :class:`WorksWithAlexaError` if Amazon could not be reached.
-        """
-        session = await self._async_session(credentials)
-        try:
-            return await session.async_get_account_email()
-        finally:
-            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
-            await session.async_release()
-
-    async def _async_endpoints(self, credentials: dict[str, Any]) -> dict[str, Any]:
-        """Every endpoint on the account, for the device picker."""
-        session = await self._async_session(credentials)
-        try:
-            endpoints = await session.async_get_endpoints()
             try:
-                self._scene_choices = scene_choices(await session.async_get_scenes())
-            except WorksWithAlexaError:
-                _LOGGER.warning("Could not list Alexa scenes for setup")
-                self._scene_choices = {}
-            return endpoints
-        finally:
-            credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
-            await session.async_release()
+                # Settles and detaches; never raises, so the original error survives.
+                await session.async_release()
+            finally:
+                credentials.update(refresh_token=session.refresh_token, mac_dms=session.mac_dms)
+
+    async def _async_list(self, session: Any) -> None:
+        """Every endpoint and scene on the account, for the pickers.
+
+        A listing failure leaves ``_endpoints`` as ``None``: the device picker
+        then takes everything.
+        """
+        try:
+            self._endpoints = await session.async_get_endpoints()
+        except WorksWithAlexaError as err:
+            _LOGGER.warning("Could not list devices to choose from: %s", err)
+            self._endpoints = None
+            return
+        try:
+            self._scene_choices = scene_choices(await session.async_get_scenes())
+        except WorksWithAlexaError:
+            _LOGGER.warning("Could not list Alexa scenes for setup")
+            self._scene_choices = {}
 
     # --- reauth -------------------------------------------------------------
 

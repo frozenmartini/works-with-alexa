@@ -1,45 +1,55 @@
-"""Direct-browser enrollment using Amazon's PKCE device-registration flow.
+"""Browser sign-in: Amazon's PKCE device-registration flow, built as it is sent.
 
 The paste-URL approach is demonstrated by superbeetle1973/alexapy-secure.
-This independent implementation shares the integration's existing builders
-and response handling. Passwords and OTPs stay on Amazon's own pages.
+This independent implementation builds the one sign-in URL and the one
+registration request it sends, here and nowhere else. Passwords and OTPs stay
+on Amazon's own pages.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
-from .fingerprint import generate_pkce, new_fingerprint
 from .auth_watch import auth_event, redacted_exchange
-from .login import build_signin_url, register_url, registration_body
+from .const import APP_NAME, APP_VERSION, DEVICE_TYPE, MARKETPLACES
 from .protocol import ApiConnectionError, AuthError, extract_tokens, parse_json, raise_for_throttle
-from .token_expiry import inspect_exchange
 
-_LOCALES = {
-    "amazon.com": "en_US", "amazon.co.uk": "en_GB", "amazon.de": "de_DE",
-    "amazon.fr": "fr_FR", "amazon.it": "it_IT", "amazon.es": "es_ES",
-    "amazon.com.au": "en_AU", "amazon.co.jp": "ja_JP", "amazon.com.br": "pt_BR",
-    "amazon.ca": "en_CA", "amazon.com.mx": "es_MX",
-}
-_DIRECT_APP_VERSION = "2.2.556530.0"
+# alexapy-secure's working form: the .com handle on every marketplace and the
+# offline_access scope.
+_HANDLE = "amzn_dp_project_dee_ios"
+_SCOPE = "device_auth_access offline_access"
 # The already-hex device-type suffix, hex-encoded once more below.
 _DEVICE_TYPE_HEX = b"23413249564c5635564d32573831"
+# The device metadata cookie: fixed, so computed once. Spaced JSON (the
+# json.dumps defaults), base64 with the padding stripped.
+_MAP_MD = base64.b64encode(json.dumps({
+    "device_user_dictionary": [],
+    "device_registration_data": {"software_version": "1"},
+    "app_identifier": {
+        "app_version": APP_VERSION, "bundle_id": "com.amazon.echo",
+    },
+}).encode()).decode().rstrip("=")
 
 
 def direct_device_id(serial: str) -> str:
     """The 120-character client id alexapy-secure's working enrollment sends.
 
     The serial and the already-hex device-type suffix are hex-encoded together,
-    so the suffix is encoded twice. This deliberately differs from
-    :func:`.fingerprint.derive_device_id`'s 92-character form, which browser
-    enrollment does not use.
+    so the suffix is encoded twice. This is the only device id sign-in sends.
     """
     return (serial.encode("ascii") + _DEVICE_TYPE_HEX).hex()
+
+
+def _b64url(data: bytes) -> str:
+    """URL-safe base64 without padding, as OAuth PKCE expects."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
 class InvalidRedirect(ValueError):
@@ -51,38 +61,44 @@ class DirectEnrollment:
 
     def __init__(self, domain: str) -> None:
         self.domain = domain
-        self.fingerprint = new_fingerprint()
-        self.verifier, self.challenge = generate_pkce()
-        self.fingerprint["map_md"] = base64.b64encode(json.dumps({
-            "device_user_dictionary": [],
-            "device_registration_data": {"software_version": "1"},
-            "app_identifier": {
-                "app_version": _DIRECT_APP_VERSION, "bundle_id": "com.amazon.echo",
-            },
-        }).encode()).decode().rstrip("=")
-        # Match the identity used by alexapy-secure's demonstrated enrollment.
-        self.device_id = direct_device_id(self.fingerprint["device_serial"])
+        # 16 random bytes as uppercase hex (32 chars): the device serial.
+        self.device_serial = secrets.token_bytes(16).hex().upper()
+        # A 313-byte device-context blob, base64 without padding.
+        self.frc = base64.b64encode(secrets.token_bytes(313)).decode("ascii").rstrip("=")
+        # RFC 7636 S256: the challenge is the base64url SHA-256 of the verifier.
+        self.verifier = _b64url(secrets.token_bytes(32))
+        self.challenge = _b64url(hashlib.sha256(self.verifier.encode("ascii")).digest())
+
+    @property
+    def device_id(self) -> str:
+        """Derived from the serial, so the sign-in and registration ids never drift."""
+        return direct_device_id(self.device_serial)
 
     @property
     def login_url(self) -> str:
-        parts = urlsplit(build_signin_url(
-            self.domain, self.device_id, self.challenge,
-            language=_LOCALES.get(self.domain, "en_US"),
-        ))
-        query = {key: values[0] for key, values in parse_qs(parts.query).items()}
-        # alexapy-secure's working form: the .com handle on every marketplace
-        # and the offline_access scope, replacing the builder's defaults.
-        query.update({
-            "openid.assoc_handle": "amzn_dp_project_dee_ios",
-            "pageId": "amzn_dp_project_dee_ios",
-            "openid.oa2.scope": "device_auth_access offline_access",
-        })
-        return urlunsplit((parts.scheme, parts.netloc, "/ap/register", urlencode(query), ""))
+        query = {
+            "openid.return_to": f"https://www.{self.domain}/ap/maplanding",
+            "openid.assoc_handle": _HANDLE,
+            "pageId": _HANDLE,
+            "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+            "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+            "openid.mode": "checkid_setup",
+            "openid.ns.oa2": "http://www.amazon.com/ap/ext/oauth/2",
+            "openid.oa2.client_id": f"device:{self.device_id}",
+            "openid.ns.pape": "http://specs.openid.net/extensions/pape/1.0",
+            "openid.oa2.response_type": "code",
+            "openid.ns": "http://specs.openid.net/auth/2.0",
+            "openid.pape.max_auth_age": "0",
+            "openid.oa2.scope": _SCOPE,
+            "openid.oa2.code_challenge_method": "S256",
+            "openid.oa2.code_challenge": self.challenge,
+            "language": MARKETPLACES.get(self.domain, "en_US"),
+        }
+        return f"https://www.{self.domain}/ap/register?{urlencode(query)}"
 
     def use_device_serial(self, serial: str) -> None:
         """Keep the entry's device identity when enrolling it again."""
-        self.fingerprint["device_serial"] = serial
-        self.device_id = direct_device_id(serial)
+        self.device_serial = serial
 
     def authorization_code(self, pasted_url: str) -> str:
         """Validate locally before sending anything to Amazon; errors omit input."""
@@ -103,21 +119,36 @@ class DirectEnrollment:
 
     async def async_register(self, session: Any, code: str) -> dict[str, Any]:
         """Exchange once, using a client with an isolated cookie jar."""
-        fingerprint = self.fingerprint
-        payload = registration_body(
-            self.domain, device_serial=fingerprint["device_serial"],
-            device_id=self.device_id, authorization_code=code,
-            code_verifier=self.verifier, frc=fingerprint["frc"].rstrip("="),
-        )
-        payload["registration_data"].update({
-            "app_version": _DIRECT_APP_VERSION, "os_version": "16.6",
-        })
+        payload = {
+            "requested_extensions": ["device_info", "customer_info"],
+            "cookies": {"website_cookies": [], "domain": f".{self.domain}"},
+            "registration_data": {
+                "domain": "Device",
+                "app_version": APP_VERSION,
+                "device_type": DEVICE_TYPE,
+                "device_name": f"%FIRST_NAME%'s%DUPE_STRATEGY_1ST%{APP_NAME}",
+                "os_version": "16.6",
+                "device_serial": self.device_serial,
+                "device_model": "iPhone",
+                "app_name": APP_NAME,
+                "software_version": "1",
+            },
+            "auth_data": {
+                "client_id": self.device_id,
+                "authorization_code": code,
+                "code_verifier": self.verifier,
+                "code_algorithm": "SHA-256",
+                "client_domain": "DeviceLegacy",
+            },
+            "user_context_map": {"frc": self.frc},
+            "requested_token_type": ["bearer", "mac_dms", "website_cookies"],
+        }
         auth_event("registration.sent", domain=self.domain)
         try:
             async with session.post(
-                register_url(self.domain), json=payload,
+                f"https://api.{self.domain}/auth/register", json=payload,
                 headers={"Content-Type": "application/json"},
-                cookies={"frc": fingerprint["frc"].rstrip("="), "map-md": fingerprint["map_md"]},
+                cookies={"frc": self.frc, "map-md": _MAP_MD},
             ) as response:
                 body = await response.text()
                 received_at = datetime.now(timezone.utc)
@@ -141,18 +172,12 @@ class DirectEnrollment:
             raise ApiConnectionError("Unexpected Amazon registration response")
         if not data["response"].get("success"):
             raise AuthError("Amazon rejected device registration")
-        # Inspect before extraction drops metadata; retain no response secrets.
-        expiry_report = {
-            "source_endpoint": "/auth/register",
-            "received_at_utc": received_at.isoformat(),
-            **inspect_exchange(data, received_at=received_at),
-        }
         tokens = extract_tokens(data)
         if not tokens["refresh_token"] or not isinstance(tokens["mac_dms"], dict):
             raise AuthError("Amazon registration returned incomplete credentials")
         return {
             "refresh_token": tokens["refresh_token"],
             "mac_dms": tokens["mac_dms"],
-            "device_serial": fingerprint["device_serial"],
-            "registration_expiry_report": expiry_report,
+            "device_serial": self.device_serial,
+            "enrolled_at": received_at.isoformat(),
         }

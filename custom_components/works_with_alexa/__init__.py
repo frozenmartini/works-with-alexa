@@ -20,21 +20,15 @@ from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
 )
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
-import aiohttp
 
-from .api import AmazonAlexaSession
-# Importing .fingerprint binds that module onto this package's globals.
-from .auth_watch import auth_event, fingerprint as _token_fingerprint
-from .auth_runtime import AuthRuntime, CredentialGuard
+from .auth_watch import auth_event, fingerprint
+from .auth_runtime import AuthRuntime
 from .const import (
     CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
     CONF_INCLUDE_ENDPOINTS,
     CONF_INCLUDE_SCENES,
-    CONF_MAC_DMS,
     CONF_REFRESH_TOKEN,
-    CONF_URL,
     DOMAIN,
 )
 from .coordinator import WorksWithAlexaCoordinator
@@ -105,32 +99,15 @@ async def async_setup_entry(
     await async_enable_evidence_logging(hass)
     event(_LOGGER, "entry.setup.started", entry_id=entry.entry_id)
 
-    guard = CredentialGuard(hass, entry)
-    client = async_create_clientsession(hass, auto_cleanup=False, cookie_jar=aiohttp.CookieJar(),
-                                        timeout=aiohttp.ClientTimeout(total=60))
-    try:
-        session = AmazonAlexaSession(
-            client,
-            domain=entry.data[CONF_URL],
-            device_serial=entry.data[CONF_DEVICE_SERIAL],
-            refresh_token=entry.data[CONF_REFRESH_TOKEN],
-            mac_dms=entry.data.get(CONF_MAC_DMS),
-            on_credentials=guard.publish,
-            entry_id=entry.entry_id,
-        )
-    except BaseException:
-        # No hook owns the client yet; HA does not detach it (auto_cleanup=False).
-        client.detach()
-        raise
-    runtime = AuthRuntime(hass, entry, guard, session)
-    # The one cleanup hook, registered with no await since the client was made,
-    # so a failed setup runs it too. Hooks pop last-first: this one runs last.
+    runtime = AuthRuntime(hass, entry)
+    # The one cleanup hook, with no await since the client was made, so a failed
+    # setup runs it too. Hooks pop last-first: this one runs last.
     entry.async_on_unload(runtime.cleanup)
-    # Before the first await too: a stop that fires while setup is still running
-    # must retire the session, or the watcher started below outlives the stop.
+    # Before the first await too: a stop during setup must retire the session.
     runtime.listen_for_stop()
+    session = runtime.session
     auth_event("runtime.started", entry_id=entry.entry_id,
-               rt_fingerprint=_token_fingerprint(entry.data[CONF_REFRESH_TOKEN]),
+               rt_fingerprint=fingerprint(entry.data[CONF_REFRESH_TOKEN]),
                auth_method=entry.data.get("auth_method", "existing_credentials"),
                enrolled_at=entry.data.get("enrolled_at"))
 
@@ -162,7 +139,7 @@ async def async_setup_entry(
         except WorksWithAlexaError:
             auth_event("identity.lookup_deferred", entry_id=entry.entry_id)
         else:
-            if email and guard.is_current():
+            if email and runtime.is_current():
                 hass.config_entries.async_update_entry(
                     entry, data={**entry.data, CONF_DIRECTED_ID: account_id(email)}
                 )

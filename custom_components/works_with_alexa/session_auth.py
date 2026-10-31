@@ -1,12 +1,13 @@
-"""The auth owner behind :class:`.api.AmazonAlexaSession`.
+"""The auth half of the one session class, :class:`.api.AmazonAlexaSession`.
 
-One object holds everything the session authenticates with: the refresh token
-and ``macDms``, the access token, the web cookies and CSRF, the lock that
+``SessionAuth`` holds everything the session authenticates with: the refresh
+token and ``macDms``, the access token, the web cookies and CSRF, the lock that
 serialises every auth step, the root-rejection latch, the scheduled renewal
-task, and the session's retirement. The facade in :mod:`.api` asks this object
-for readiness, headers and forced recovery; it holds none of this state itself.
+task, the session's retirement and its release of the HTTP client.
+:class:`.api.AmazonAlexaSession` subclasses it and adds the transport and the
+account operations.
 
-Retirement is one-way. Once retired, the owner sends nothing further, saves
+Retirement is one-way. Once retired, the session sends nothing further, saves
 nothing, rebuilds nothing and starts no reauth; the credentials it holds stay
 readable so a caller can still copy them out.
 
@@ -48,7 +49,6 @@ from .protocol import (
     raise_for_throttle,
     WorksWithAlexaError,
 )
-from .token_expiry import inspect_exchange
 
 # Test seams: the retry wait, the watcher wait and every expiry read go through
 # these, so a test can replace them without patching asyncio or time globally.
@@ -88,7 +88,6 @@ class SessionAuth:
         client: aiohttp.ClientSession,
         *,
         domain: str,
-        device_serial: str,
         refresh_token: str,
         mac_dms: dict[str, Any] | None = None,
         on_credentials: Callable[[str, dict[str, Any]], bool | None] | None = None,
@@ -96,7 +95,6 @@ class SessionAuth:
     ) -> None:
         self._client = client
         self._domain = domain
-        self._device_serial = device_serial
         self._refresh_token = refresh_token
         self._mac_dms = copy.deepcopy(mac_dms) if mac_dms else {}
 
@@ -112,6 +110,7 @@ class SessionAuth:
         self._watcher: asyncio.Task | None = None
         self._terminal_auth_error: AuthError | None = None
         self._retired = False
+        self._detached = False
 
     def __repr__(self) -> str:
         return (f"<{type(self).__name__} domain={self._domain!r} "
@@ -129,20 +128,12 @@ class SessionAuth:
 
     @property
     def mac_dms(self) -> dict[str, Any]:
-        """The live dict; the facade hands out copies."""
-        return self._mac_dms
+        """A copy of the current ``macDms``; still readable after retirement."""
+        return copy.deepcopy(self._mac_dms)
 
     @property
     def csrf(self) -> str | None:
         return self._csrf
-
-    @property
-    def session_id(self) -> str:
-        return self._session_id
-
-    @property
-    def entry_id(self) -> str | None:
-        return self._entry_id
 
     @property
     def retired(self) -> bool:
@@ -190,7 +181,11 @@ class SessionAuth:
         state = self._watcher_state()
         self._retired = True
         self._on_credentials = None
-        self.stop_refresh_watcher()
+        task = self._watcher
+        if task is not None and not task.done() and not task.cancelling():
+            # The reference is kept until async_release() settles it.
+            task.cancel()
+            self.emit("watcher.stopped")
         self.emit("session.retired", rt_fingerprint=fingerprint(self._refresh_token),
                   watcher_state=state)
 
@@ -201,27 +196,47 @@ class SessionAuth:
         async with self._lock:
             self.retire()
 
-    async def async_shutdown(self) -> None:
-        """Retire, then wait for the watcher task to end. Never touches the client."""
+    async def async_release(self) -> None:
+        """Retire, wait for the watcher to end, then detach the client once.
+
+        Idempotent; never closes the client and never raises for the
+        watcher's outcome.
+        """
         self.retire()
         task = self._watcher
-        if task is None:
-            return
-        if asyncio.current_task() is task:
-            # Called from inside the loop: it ends on its own at its next checkpoint.
-            return
-        await asyncio.wait({task})
-        if self._watcher is task:
-            self._watcher = None
+        if task is not None and asyncio.current_task() is not task:
+            # From inside the loop the wait is skipped: it ends on its own at its
+            # next checkpoint.
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError:
+                # Cancelled while the watcher settles: detach once it has ended.
+                task.add_done_callback(lambda _task: self._detach())
+                raise
+            if self._watcher is task:
+                self._watcher = None
+        self._detach()
+
+    def _detach(self) -> None:
+        if not self._detached:
+            self._detached = True
+            self._client.detach()
 
     # --- lifecycle ----------------------------------------------------------
 
     async def async_setup(self) -> None:
         """Rebuild a usable session from the refresh token alone."""
+        await self.async_rebuild("startup")
+
+    async def async_rebuild(self, reason: str) -> None:
+        """Refresh the access token, then rebuild cookies and CSRF; no latch check.
+
+        ``startup`` at setup; ``api_recovery`` once after an API rejection.
+        """
         self.check_active()
         async with self._lock:
             self.check_active()
-            await self._async_refresh(reason="startup")
+            await self._async_refresh(reason=reason)
             await self._async_rebuild_web_session()
 
     async def async_refresh_access_token(self) -> None:
@@ -231,14 +246,6 @@ class SessionAuth:
             self.check_active()
             await self._async_refresh(reason="explicit_token_probe")
 
-    async def async_force_recovery(self) -> None:
-        """One forced refresh and rebuild after an API rejection; no latch check."""
-        self.check_active()
-        async with self._lock:
-            self.check_active()
-            await self._async_refresh(reason="api_recovery")
-            await self._async_rebuild_web_session()
-
     def start_refresh_watcher(self, on_auth_failure: Callable[[AuthError], None]) -> None:
         """Maintain the session even when there are no entity listeners/polls."""
         if self._watcher is None and not self._retired:
@@ -247,13 +254,6 @@ class SessionAuth:
             )
             self._watcher.add_done_callback(self._watcher_done)
             self.emit("watcher.started", rt_fingerprint=fingerprint(self._refresh_token))
-
-    def stop_refresh_watcher(self) -> None:
-        """Ask a running watcher to stop; the reference is kept until settled."""
-        task = self._watcher
-        if task is not None and not task.done() and not task.cancelling():
-            task.cancel()
-            self.emit("watcher.stopped")
 
     def _watcher_done(self, task: asyncio.Task) -> None:
         """Retrieve the task's outcome so no exception goes unretrieved."""
@@ -375,15 +375,10 @@ class SessionAuth:
                         received_at = datetime.now(timezone.utc)
                         self.emit("refresh.completed", refresh_id=refresh_id, reason=reason,
                                   at_fingerprint=fingerprint(self._access_token),
-                                  previous_at_fingerprint=fingerprint(before_at),
-                                  at_changed=before_at is not None and before_at != self._access_token,
-                                  at_first_observation=before_at is None,
                                   rt_fingerprint=fingerprint(self._refresh_token),
-                                  previous_rt_fingerprint=fingerprint(before_rt),
-                                  rt_returned=bool(tokens["refresh_token"]), rt_changed=before_rt != self._refresh_token,
+                                  rt_changed=before_rt != self._refresh_token,
                                   refresh_in_seconds=tokens["lifetime"],
                                   next_refresh_utc=(received_at + timedelta(seconds=tokens["lifetime"])).isoformat(),
-                                  expiry=inspect_exchange(document, received_at=received_at),
                                   elapsed_ms=round((monotonic() - started) * 1000, 3))
                     except Exception:
                         # The rotation is committed: a failure while reporting it
@@ -549,7 +544,7 @@ class SessionAuth:
     async def _async_fetch_csrf(self) -> None:
         """Match alexapy: reuse a valid-domain CSRF cookie or try its page list.
 
-        These are direct HTTP reads. Calling the facade's request helper here
+        These are direct HTTP reads. Calling the session's request helper here
         would recursively trigger recovery while the refresh lock is held.
         """
         self._csrf = self._csrf_cookie()

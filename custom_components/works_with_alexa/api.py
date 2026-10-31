@@ -1,14 +1,14 @@
-"""The Alexa account session facade and the GraphQL transport.
+"""The Alexa account session: one object, auth plus transport and operations.
 
-The durable credential is the **refresh token** (plus ``macDms`` and the device
-serial). Access token, cookies and CSRF are disposable and rebuilt on every
-start; nothing here persists them, and nothing here deletes stored credentials
-on an error -- an auth failure raises so Home Assistant can run its reauth flow
-instead (ref/10).
+The durable credential is the **refresh token** (plus ``macDms``). Access
+token, cookies and CSRF are disposable and rebuilt on every start; nothing here
+persists them, and nothing here deletes stored credentials on an error -- an
+auth failure raises so Home Assistant can run its reauth flow instead (ref/10).
 
-Every credential, the auth lock, the scheduled renewal and retirement live in
-:class:`.session_auth.SessionAuth`; this facade holds only the HTTP client and
-that owner, and asks it for readiness, headers and forced recovery.
+:class:`AmazonAlexaSession` is a :class:`.session_auth.SessionAuth`: every
+credential, the auth lock, the scheduled renewal, retirement and the client's
+release live in that base class; this module adds the request helper, the
+GraphQL transport and the account operations.
 
 Response handling lives in :mod:`.protocol`, which has no I/O dependencies and
 carries the unit tests.
@@ -16,8 +16,6 @@ carries the unit tests.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-import copy
 import logging
 import re
 from typing import Any
@@ -31,7 +29,6 @@ from .const import (
     GRAPHQL_PATH,
 )
 from .models import Endpoint, parse_endpoint
-from .auth_watch import fingerprint
 from .dev_logging import event, operation as logged_operation
 from .scenes import AlexaScene
 from .protocol import (
@@ -55,101 +52,8 @@ from .session_auth import SessionAuth
 _LOGGER = logging.getLogger(__name__)
 
 
-class AmazonAlexaSession:
+class AmazonAlexaSession(SessionAuth):
     """One authenticated session against the Alexa account API."""
-
-    def __init__(
-        self,
-        session: aiohttp.ClientSession,
-        *,
-        domain: str,
-        device_serial: str,
-        refresh_token: str,
-        mac_dms: dict[str, Any] | None = None,
-        on_credentials: Callable[[str, dict[str, Any]], bool | None] | None = None,
-        entry_id: str | None = None,
-    ) -> None:
-        self._session = session
-        self._owner = SessionAuth(
-            session,
-            domain=domain,
-            device_serial=device_serial,
-            refresh_token=refresh_token,
-            mac_dms=mac_dms,
-            on_credentials=on_credentials,
-            entry_id=entry_id,
-        )
-        self._detached = False
-
-    def __repr__(self) -> str:
-        return (f"<{type(self).__name__} domain={self.domain!r} "
-                f"rt={fingerprint(self.refresh_token)} retired={self._owner.retired}>")
-
-    def _auth(self, name: str, **fields: Any) -> None:
-        self._owner.emit(name, **fields)
-
-    @property
-    def auth(self) -> SessionAuth:
-        """The auth owner: credentials, tokens, lock, watcher and retirement."""
-        return self._owner
-
-    @property
-    def domain(self) -> str:
-        return self._owner.domain
-
-    @property
-    def refresh_token(self) -> str:
-        """Current refresh token.
-
-        Amazon may rotate it, so the config entry should be updated from this
-        after a refresh. Still readable after retirement.
-        """
-        return self._owner.refresh_token
-
-    @property
-    def mac_dms(self) -> dict[str, Any]:
-        """A copy of the current ``macDms``; still readable after retirement."""
-        return copy.deepcopy(self._owner.mac_dms)
-
-    # --- lifecycle ----------------------------------------------------------
-
-    async def async_setup(self) -> None:
-        """Rebuild a usable session from the refresh token alone."""
-        await self._owner.async_setup()
-
-    async def async_refresh_access_token(self) -> None:
-        """Refresh the bearer token alone, without cookies or device requests.
-
-        Used by the standalone experiment to test the /auth/token exchange.
-        Any rotated refresh token remains available via refresh_token.
-        """
-        await self._owner.async_refresh_access_token()
-
-    def start_refresh_watcher(self, on_auth_failure: Callable[[AuthError], None]) -> None:
-        """Maintain the session even when there are no entity listeners/polls."""
-        self._owner.start_refresh_watcher(on_auth_failure)
-
-    def stop_refresh_watcher(self) -> None:
-        self._owner.stop_refresh_watcher()
-
-    def retire(self) -> None:
-        """Stop all further work at once: no request, save, rebuild or reauth."""
-        self._owner.retire()
-
-    async def async_retire_after_auth(self) -> None:
-        """Wait for an auth step in progress to finish, then retire."""
-        await self._owner.async_retire_after_auth()
-
-    async def async_shutdown(self) -> None:
-        """Retire, then wait for the watcher to end. Never touches the client."""
-        await self._owner.async_shutdown()
-
-    async def async_release(self) -> None:
-        """Shut down, then release the HTTP client once (detach, never close)."""
-        await self.async_shutdown()
-        if not self._detached:
-            self._detached = True
-            self._session.detach()
 
     async def async_get_account_email(self) -> str | None:
         """Read the authenticated account's email.
@@ -165,13 +69,10 @@ class AmazonAlexaSession:
         )
         email = data.get("email") if isinstance(data, dict) else None
         identified = isinstance(email, str) and bool(email.strip())
-        self._auth("account.verified" if identified else "account.unidentified", stage="account")
+        self.emit("account.verified" if identified else "account.unidentified", stage="account")
         return email if identified else None
 
     # --- transport ----------------------------------------------------------
-
-    def _headers(self) -> dict[str, str]:
-        return self._owner.headers()
 
     async def _async_request(
         self,
@@ -180,18 +81,17 @@ class AmazonAlexaSession:
         *,
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        allow_missing_json: bool = False,
         _retried: bool = False,
     ) -> Any:
-        await self._owner.async_ensure_token()
-        self._owner.check_active()
+        await self.async_ensure_token()
+        self.check_active()
         started = session_auth.monotonic()
         path = URL(url).path
         http_id = uuid4().hex
         event(_LOGGER, "http.sent", method=method, path=path, retry=_retried, http_id=http_id)
         try:
-            async with self._session.request(
-                method, url, json=json_body, params=params, headers=self._headers()
+            async with self._client.request(
+                method, url, json=json_body, params=params, headers=self.headers()
             ) as response:
                 body = await response.text()
                 status = response.status
@@ -203,29 +103,28 @@ class AmazonAlexaSession:
         event(_LOGGER, "http.received", method=method, path=path, status=status, http_id=http_id,
               retry=_retried, elapsed_ms=round((session_auth.monotonic() - started) * 1000, 3))
         # Retired during the read: no forced recovery, no retry, no result.
-        self._owner.check_active()
+        self.check_active()
 
         if status in (401, 403):
             if _retried:
-                self._auth("api.rejected", level=logging.ERROR, status=status, path=path,
-                           root_token_rejected=False, new_login_required=True)
+                self.emit("api.rejected", level=logging.ERROR, status=status, path=path,
+                          root_token_rejected=False, new_login_required=True)
                 raise AuthError(f"Amazon returned HTTP {status} after session recovery", stage="api")
             # Exactly one forced refresh-and-retry; a second failure is real.
             _LOGGER.debug("HTTP %s; refreshing the session once and retrying", status)
-            self._auth("api.recovery_started", status=status, path=path)
-            await self._owner.async_force_recovery()
+            self.emit("api.recovery_started", status=status, path=path)
+            await self.async_rebuild("api_recovery")
             return await self._async_request(
                 method,
                 url,
                 json_body=json_body,
                 params=params,
-                allow_missing_json=allow_missing_json,
                 _retried=True,
             )
 
         if status >= 400:
-            self._auth("api.failed", level=logging.WARNING, path=path, status=status,
-                       root_token_rejected=False, new_login_required=False)
+            self.emit("api.failed", level=logging.WARNING, path=path, status=status,
+                      root_token_rejected=False, new_login_required=False)
         raise_for_throttle(body)
 
         if status >= 400:
@@ -236,10 +135,8 @@ class AmazonAlexaSession:
         try:
             return parse_json(body)
         except ApiConnectionError:
-            if allow_missing_json:
-                return {}
-            self._auth("api.invalid_response", level=logging.WARNING, path=path, status=status,
-                       root_token_rejected=False, new_login_required=False)
+            self.emit("api.invalid_response", level=logging.WARNING, path=path, status=status,
+                      root_token_rejected=False, new_login_required=False)
             raise
 
     async def _async_graphql(
@@ -259,8 +156,8 @@ class AmazonAlexaSession:
             try:
                 return check_graphql_response(result)
             except AuthError:
-                self._auth("api.rejected", level=logging.ERROR, stage="graphql",
-                           root_token_rejected=False, new_login_required=True)
+                self.emit("api.rejected", level=logging.ERROR, stage="graphql",
+                          root_token_rejected=False, new_login_required=True)
                 raise
 
     # --- operations ---------------------------------------------------------
