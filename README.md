@@ -89,12 +89,8 @@ scene selections, and reuses the entry's device serial. If verification fails
 temporarily after Amazon accepted the sign-in, retry the form without starting another
 sign-in.
 
-Older entries may have used a device serial as their account identifier. The
-integration learns their account identity while the old sign-in still works,
-keeping the existing entry and selections. If that sign-in has expired before
-an identity was recorded, recovery shows the verified Amazon account and asks
-you to explicitly confirm it is the account originally used for the entry.
-Cancel if it is a different account. Known account mismatches are always rejected.
+An entry is recognised by the one-way key of its Amazon account; a sign-in to a
+different account is refused.
 
 Connection entries store the refresh token, `macDms`, a device serial, the
 marketplace and when and how you signed in. **No email address and no password is

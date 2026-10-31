@@ -9,6 +9,7 @@ runs its reauth flow, and a transient failure raises
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,7 +17,6 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import (
-    config_validation as cv,
     device_registry as dr,
     entity_registry as er,
 )
@@ -24,7 +24,6 @@ from homeassistant.helpers import (
 from .auth_watch import auth_event, fingerprint
 from .auth_runtime import AuthRuntime
 from .const import (
-    CONF_DEVICE_SERIAL,
     CONF_DIRECTED_ID,
     CONF_INCLUDE_ENDPOINTS,
     CONF_INCLUDE_SCENES,
@@ -36,6 +35,7 @@ from .dev_logging import async_enable_evidence_logging, event
 from .features import writable_feature_keys
 from .identity import account_id, is_email
 from .protocol import AuthError, WorksWithAlexaError
+from .scenes import scene_unique_id, scenes_device_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,15 +49,6 @@ PLATFORMS: list[Platform] = [
 ]
 
 type WorksWithAlexaConfigEntry = ConfigEntry[WorksWithAlexaCoordinator]
-
-# Set up from the UI only. Defining async_setup without a schema would stop Home
-# Assistant from reporting a YAML entry for this domain as unsupported.
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
-
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    await async_enable_evidence_logging(hass)
-    return True
 
 
 async def async_migrate_entry(
@@ -128,31 +119,8 @@ async def async_setup_entry(
     # surfaces as a retry instead of a shell of unavailable entities.
     await coordinator.async_config_entry_first_refresh()
 
-    # Older entries used the registration serial when account lookup failed.
-    # Learn their identity while those credentials still work, retaining the ID.
-    if (
-        getattr(entry, "unique_id", None) == entry.data[CONF_DEVICE_SERIAL]
-        and entry.data.get(CONF_DIRECTED_ID) in (None, entry.unique_id)
-    ):
-        try:
-            email = await session.async_get_account_email()
-        except WorksWithAlexaError:
-            auth_event("identity.lookup_deferred", entry_id=entry.entry_id)
-        else:
-            if email and runtime.is_current():
-                hass.config_entries.async_update_entry(
-                    entry, data={**entry.data, CONF_DIRECTED_ID: account_id(email)}
-                )
-                auth_event("identity.learned", entry_id=entry.entry_id)
-
     entry.runtime_data = coordinator
-    _purge_deselected(hass, entry)
-    _purge_deselected_scenes(hass, entry)
-    _purge_reclassified_sensors(hass, entry, coordinator)
-    _purge_built_fan(hass, entry)
-    # The device selection and the polling interval are both read at setup, so
-    # changing either from the options flow needs the entry to come back up.
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    _purge_registry(hass, entry, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     session.start_refresh_watcher(runtime.request_reauth)
@@ -161,43 +129,84 @@ async def async_setup_entry(
     return True
 
 
+def _kept_identifiers(
+    entry: WorksWithAlexaConfigEntry, endpoint_ids: Iterable[str]
+) -> set[str]:
+    """The device identifiers a selection keeps: the given endpoints, plus the
+    Scenes device while at least one scene is selected."""
+    keep = set(endpoint_ids)
+    if entry.options.get(CONF_INCLUDE_SCENES, []):
+        keep.add(scenes_device_id(entry.entry_id))
+    return keep
+
+
+def _our_identifiers(device: dr.DeviceEntry) -> set[str]:
+    """The device's identifiers in this integration's domain."""
+    return {identifier for domain, identifier in device.identifiers if domain == DOMAIN}
+
+
 @callback
-def _purge_deselected(
+def _purge_registry(
     hass: HomeAssistant,
     entry: WorksWithAlexaConfigEntry,
+    coordinator: WorksWithAlexaCoordinator,
 ) -> None:
-    """Drop registry devices the user has deselected.
+    """Remove what the current selection no longer builds, once per setup.
 
-    Home Assistant keeps a device in the registry once created, so simply not
-    rebuilding its entities leaves it behind as an empty shell that can only be
-    disabled. Deselecting is meant to remove, so remove it here.
+    Home Assistant keeps a device or an entity in its registry once created, so
+    simply not rebuilding it leaves an empty shell that can only be disabled.
+    Three removals, in this order:
 
-    Devices are only dropped when the selection is an explicit list, and only
-    when they are not on it. An endpoint missing from a poll is a transient
-    gap, not a decision to forget the device, so the selection decides what is
-    kept rather than what the latest poll returned.
+    1. Deselected devices. Only when the selection is an explicit list, and only
+       devices not on it: an endpoint missing from a poll is a transient gap,
+       not a decision to forget the device, so the selection decides what is
+       kept rather than what the latest poll returned. Detached rather than
+       deleted outright, so a device also provided by another integration
+       survives.
+    2. Unticked scene buttons, keeping the remaining ones; the Scenes device is
+       detached once no scene is selected.
+    3. Replaced sensors. An endpoint's operations can change between setups, so
+       a sensor row whose feature a writable entity of a selected endpoint now
+       provides is removed.
     """
-    include = entry.options.get(CONF_INCLUDE_ENDPOINTS)
-    if include is None:
-        return
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
 
-    registry = dr.async_get(hass)
-    keep = set(include)
-    if entry.options.get(CONF_INCLUDE_SCENES, []):
-        keep.add(f"{entry.entry_id}:scenes")
-    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
-        ours = {
-            identifier
-            for domain, identifier in device.identifiers
-            if domain == DOMAIN
-        }
-        if ours and not ours & keep:
-            _LOGGER.debug("Removing deselected device %s", device.name)
-            # Detach rather than delete outright, so a device also provided by
-            # another integration survives.
-            registry.async_update_device(
-                device.id, remove_config_entry_id=entry.entry_id
-            )
+    include = entry.options.get(CONF_INCLUDE_ENDPOINTS)
+    if include is not None:
+        keep = _kept_identifiers(entry, include)
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+            ours = _our_identifiers(device)
+            if ours and not ours & keep:
+                _LOGGER.debug("Removing deselected device %s", device.name)
+                devices.async_update_device(
+                    device.id, remove_config_entry_id=entry.entry_id
+                )
+
+    selected_scenes = set(entry.options.get(CONF_INCLUDE_SCENES, []))
+    prefix = scene_unique_id(entry.entry_id, "")
+    for entity in er.async_entries_for_config_entry(entities, entry.entry_id):
+        if (
+            entity.domain == "button"
+            and entity.unique_id.startswith(prefix)
+            and entity.unique_id[len(prefix):] not in selected_scenes
+        ):
+            entities.async_remove(entity.entity_id)
+    if not selected_scenes:
+        scenes_device = (DOMAIN, scenes_device_id(entry.entry_id))
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+            if scenes_device in device.identifiers:
+                devices.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
+
+    replaced = {
+        f"{endpoint.endpoint_id}:{key}"
+        for endpoint in coordinator.selected.values()
+        for key in writable_feature_keys(endpoint)
+    }
+    for entity in er.async_entries_for_config_entry(entities, entry.entry_id):
+        if entity.domain == "sensor" and entity.unique_id in replaced:
+            event(_LOGGER, "entity.reclassified", old_platform="sensor")
+            entities.async_remove(entity.entity_id)
 
 
 async def async_remove_config_entry_device(
@@ -213,78 +222,7 @@ async def async_remove_config_entry_device(
     coordinator = getattr(entry, "runtime_data", None)
     if coordinator is None:
         return True
-    ours = {
-        identifier for domain, identifier in device.identifiers if domain == DOMAIN
-    }
-    keep = set(coordinator.selected)
-    if entry.options.get(CONF_INCLUDE_SCENES, []):
-        keep.add(f"{entry.entry_id}:scenes")
-    return not (ours & keep)
-
-
-@callback
-def _purge_deselected_scenes(hass: HomeAssistant, entry: WorksWithAlexaConfigEntry) -> None:
-    """Remove unticked buttons without removing the remaining Scenes group."""
-    selected = set(entry.options.get(CONF_INCLUDE_SCENES, []))
-    prefix = f"{entry.entry_id}:scene:"
-    registry = er.async_get(hass)
-    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if (
-            entity.domain == "button"
-            and entity.unique_id.startswith(prefix)
-            and entity.unique_id[len(prefix):] not in selected
-        ):
-            registry.async_remove(entity.entity_id)
-    if not selected:
-        devices = dr.async_get(hass)
-        for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
-            if (DOMAIN, f"{entry.entry_id}:scenes") in device.identifiers:
-                devices.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
-
-
-@callback
-def _purge_reclassified_sensors(
-    hass: HomeAssistant, entry: WorksWithAlexaConfigEntry, coordinator: WorksWithAlexaCoordinator
-) -> None:
-    """Replace old manufacturer-blocked sensors with their writable entities."""
-    replaced = {
-        f"{endpoint.endpoint_id}:{key}"
-        for endpoint in coordinator.selected.values()
-        for key in writable_feature_keys(endpoint)
-    }
-    registry = er.async_get(hass)
-    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if entity.domain == "sensor" and entity.unique_id in replaced:
-            event(_LOGGER, "entity.reclassified", old_platform="sensor")
-            registry.async_remove(entity.entity_id)
-
-
-@callback
-def _purge_built_fan(hass: HomeAssistant, entry: WorksWithAlexaConfigEntry) -> None:
-    """Forget the entities of the removed fan platform.
-
-    The built Window Fan (``fan.window_fan``) was dropped on 2026-09-13; the
-    owner assembles fans in kitbash from the raw entities instead. Without
-    this the registry keeps the old entity as a restored, unavailable shell.
-    """
-    registry = er.async_get(hass)
-    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if entity.domain == "fan":
-            _LOGGER.info("Removing the retired built fan entity %s", entity.entity_id)
-            registry.async_remove(entity.entity_id)
-
-
-async def _async_options_updated(
-    hass: HomeAssistant, entry: WorksWithAlexaConfigEntry
-) -> None:
-    """Reload so new options take effect."""
-    coordinator = getattr(entry, "runtime_data", None)
-    if coordinator is not None and coordinator.configured_options == dict(entry.options):
-        # Credential rotation also calls entry update listeners. It must not
-        # reload the integration or cause another startup refresh.
-        return
-    event(_LOGGER, "options.updated", entry_id=entry.entry_id)
-    await hass.config_entries.async_reload(entry.entry_id)
+    return not (_our_identifiers(device) & _kept_identifiers(entry, coordinator.selected))
 
 
 async def async_unload_entry(

@@ -56,7 +56,6 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             ),
         )
         self.session = session
-        self.configured_options = dict(entry.options)
         self.scenes: dict[str, AlexaScene] = {}
         # None until the first scene discovery, so its first failure is logged.
         self.scenes_available: bool | None = None

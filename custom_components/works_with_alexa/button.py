@@ -14,7 +14,7 @@ from .const import DOMAIN
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import event, operation
 from .protocol import WorksWithAlexaError
-from .scenes import AlexaScene
+from .scenes import AlexaScene, scene_unique_id, scenes_device_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,10 +42,10 @@ class WorksWithAlexaSceneButton(CoordinatorEntity[WorksWithAlexaCoordinator], Bu
         super().__init__(coordinator)
         self._automation_id = scene.automation_id
         entry_id = coordinator.config_entry.entry_id
-        self._attr_unique_id = f"{entry_id}:scene:{scene.automation_id}"
+        self._attr_unique_id = scene_unique_id(entry_id, scene.automation_id)
         self._attr_name = scene.name
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry_id}:scenes")},
+            identifiers={(DOMAIN, scenes_device_id(entry_id))},
             name="Scenes",
             manufacturer="Amazon Alexa",
             model="Third-party scenes",

@@ -95,18 +95,17 @@ class JsonLineFormatter(logging.Formatter):
         self.source = source
 
     def format(self, record: logging.LogRecord) -> str:
+        # The record was sanitised by SafeQueueHandler.prepare before it was
+        # queued; this formatter is attached only behind that queue.
         data = {
             'timestamp': datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec='milliseconds'),
             'level': record.levelname,
             'logger': record.name,
             'event': getattr(record, 'dev_event', 'log'),
-            'message': safe_text(record.getMessage()),
+            'message': record.getMessage(),
             'source': self.source,
         }
-        data.update(safe_fields(getattr(record, 'dev_fields', {})))
-        if record.exc_info:
-            data['error_type'] = record.exc_info[0].__name__
-        # Never format exception tracebacks; upstream messages can contain URLs.
+        data.update(getattr(record, 'dev_fields', {}))
         return json.dumps(data, ensure_ascii=False)
 
 
@@ -118,12 +117,12 @@ class SafeQueueHandler(QueueHandler):
         prepared.msg = safe_text(record.getMessage())
         prepared.args = None
         prepared.exc_text = None
+        fields = dict(getattr(record, 'dev_fields', {}))
         if record.exc_info:
-            prepared.dev_fields = {**getattr(record, 'dev_fields', {}),
-                                   'error_type': record.exc_info[0].__name__}
+            fields['error_type'] = record.exc_info[0].__name__
         prepared.exc_info = None
         prepared.stack_info = None
-        prepared.dev_fields = safe_fields(getattr(prepared, 'dev_fields', {}))
+        prepared.dev_fields = safe_fields(fields)
         return prepared
 
     def handleError(self, record: logging.LogRecord) -> None:

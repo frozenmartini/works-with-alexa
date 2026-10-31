@@ -30,7 +30,7 @@
       },
       "direct_redirect": {
         "title": "Complete Amazon sign-in",
-        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. Amazon then shows a \"Sorry, we couldn't find that page\" page. That is the correct page: sign-in worked. Copy the full URL from its address bar; it contains `/ap/maplanding`. On a phone, tap the address bar to show the whole URL.\n\n   ![Amazon's \"Sorry, we couldn't find that page\" page, the correct landing page]({landing_image})\n\n4. Paste that URL below and submit promptly.\n\nThe account will be checked before the integration uses these credentials. If verification or saving fails, retry without starting another sign-in. Select Start a new sign-in if Amazon rejects the authorization code. Never share the redirect URL.",
+        "description": "1. [Open Amazon sign-in]({login_url}) in a separate browser tab. Keep this form open.\n2. Complete sign-in and any verification Amazon asks for.\n3. Amazon then shows a \"Sorry, we couldn't find that page\" page. That is the correct page: sign-in worked. Copy the full URL from its address bar; it contains `/ap/maplanding`. On a phone, tap the address bar to show the whole URL.\n\n   ![Amazon's \"Sorry, we couldn't find that page\" page, the correct landing page]({landing_image})\n\n4. Paste that URL below and submit promptly.\n\nThe account will be checked before the integration uses these credentials. If verification fails, retry without starting another sign-in. Select Start a new sign-in if Amazon rejects the authorization code. Never share the redirect URL.",
         "data": {
           "redirect_url": "Full Amazon redirect URL",
           "restart_login": "Start a new sign-in"
@@ -45,25 +45,16 @@
         "data_description": {
           "include_scenes": "One button per scene. Scene selection is separate from devices."
         }
-      },
-      "confirm_legacy_account": {
-        "title": "Confirm the account for this older entry",
-        "description": "Amazon verified the signed-in account as {account}. This older entry did not record its account identity, and the previous sign-in can no longer verify it. Confirm that this is the account originally used for this entry. Your existing entry, devices and scenes will be kept. Cancel if this is a different account.",
-        "data": {
-          "confirm_account": "This is the Amazon account originally used for this entry"
-        }
       }
     },
     "error": {
       "cannot_connect": "Could not reach Amazon. Check your connection and try again.",
-      "invalid_auth": "Amazon rejected those credentials. The refresh token may have been revoked.",
       "invalid_redirect": "Paste the full HTTPS URL from the final /ap/maplanding page on the marketplace you selected, including its authorization code.",
-      "direct_login_failed": "Amazon rejected the sign-in or registration. Select Start a new sign-in and complete Amazon sign-in again.",
-      "signin_save_failed": "Could not save the sign-in. Check Home Assistant storage permissions and retry without starting a new sign-in.",
-      "account_confirmation_required": "Confirm the account to finish recovery, or cancel to keep the existing sign-in."
+      "direct_login_failed": "Amazon rejected the sign-in or registration. Select Start a new sign-in and complete Amazon sign-in again."
     },
     "abort": {
       "already_configured": "This Amazon account is already set up.",
+      "already_in_progress": "A sign-in for this Amazon account is already open. Finish or cancel it first.",
       "reauth_successful": "Re-authentication was successful.",
       "wrong_account": "That sign-in was for a different Amazon account. Sign in with the account this entry was set up for."
     }

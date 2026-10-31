@@ -2,9 +2,9 @@
 
 :func:`new_session` is the one recipe for a session over HA's HTTP client, for
 the runtime and the config flow. :class:`AuthRuntime` builds one entry's session
-and may write credentials, learn the account identity or start a reauth flow
-only while the stored credentials are the ones it was built from (or last wrote
-itself); a newer sign-in, a failed save or its own cleanup revokes that for good.
+and may write credentials or start a reauth flow only while the stored
+credentials are the ones it was built from (or last wrote itself); a newer
+sign-in, a failed save or its own cleanup revokes that for good.
 
 One unload hook revokes and retires at once, then settles the refresh watcher
 and only then detaches the client. The stop listener waits for an auth step in
