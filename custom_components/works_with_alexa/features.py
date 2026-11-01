@@ -201,11 +201,6 @@ def produces_entities(endpoint: Endpoint) -> bool:
     return bool(raw_entities(endpoint))
 
 
-def is_controllable(endpoint: Endpoint) -> bool:
-    """Whether the raw layer yields any writable entity."""
-    return bool(writable_feature_keys(endpoint))
-
-
 def numbered_choices(rows: Iterable[tuple[Any, str, str]]) -> dict[str, str]:
     """Id -> label from ``(sort key, id, label)`` rows, sorted whole, so the id
     breaks ties between equal keys; the second and later repeats of a label get
@@ -246,7 +241,7 @@ def endpoint_choices(endpoints: dict[str, Endpoint]) -> dict[str, str]:
         label = name
         if endpoint.manufacturer:
             label = f"{label} ({endpoint.manufacturer})"
-        if not is_controllable(endpoint):
+        if not writable_feature_keys(endpoint):
             label = f"{label} - read-only"
         # Names are not unique on an Alexa account. Two identical rows of
         # checkboxes are unpickable, so disambiguate the repeats.

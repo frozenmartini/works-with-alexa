@@ -38,15 +38,6 @@ _MAP_MD = base64.b64encode(json.dumps({
 }).encode()).decode().rstrip("=")
 
 
-def direct_device_id(serial: str) -> str:
-    """The 120-character client id alexapy-secure's working enrollment sends.
-
-    The serial and the already-hex device-type suffix are hex-encoded together,
-    so the suffix is encoded twice. This is the only device id sign-in sends.
-    """
-    return (serial.encode("ascii") + _DEVICE_TYPE_HEX).hex()
-
-
 def _b64url(data: bytes) -> str:
     """URL-safe base64 without padding, as OAuth PKCE expects."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -71,8 +62,13 @@ class DirectEnrollment:
 
     @property
     def device_id(self) -> str:
-        """Derived from the serial, so the sign-in and registration ids never drift."""
-        return direct_device_id(self.device_serial)
+        """The 120-character client id alexapy-secure's working enrollment sends.
+
+        The serial and the already-hex device-type suffix are hex-encoded together,
+        so the suffix is encoded twice. This is the only device id sign-in sends.
+        Derived from the serial, so the sign-in and registration ids never drift.
+        """
+        return (self.device_serial.encode("ascii") + _DEVICE_TYPE_HEX).hex()
 
     @property
     def login_url(self) -> str:
@@ -95,10 +91,6 @@ class DirectEnrollment:
             "language": MARKETPLACES.get(self.domain, "en_US"),
         }
         return f"https://www.{self.domain}/ap/register?{urlencode(query)}"
-
-    def use_device_serial(self, serial: str) -> None:
-        """Keep the entry's device identity when enrolling it again."""
-        self.device_serial = serial
 
     def authorization_code(self, pasted_url: str) -> str:
         """Validate locally before sending anything to Amazon; errors omit input."""

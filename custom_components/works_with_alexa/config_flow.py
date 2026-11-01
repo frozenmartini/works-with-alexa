@@ -131,7 +131,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             self._direct_credentials = None
             self._direct_enrollment = DirectEnrollment(user_input[CONF_URL])
             if self.source == SOURCE_REAUTH:
-                self._direct_enrollment.use_device_serial(self._get_reauth_entry().data[CONF_DEVICE_SERIAL])
+                # Keep the entry's device identity when enrolling it again.
+                self._direct_enrollment.device_serial = self._get_reauth_entry().data[CONF_DEVICE_SERIAL]
             auth_event("signin.started", method="direct_browser", interactive=True)
             return await self.async_step_direct_redirect()
         fields = {

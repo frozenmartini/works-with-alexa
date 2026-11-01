@@ -132,10 +132,6 @@ class SessionAuth:
         return copy.deepcopy(self._mac_dms)
 
     @property
-    def csrf(self) -> str | None:
-        return self._csrf
-
-    @property
     def retired(self) -> bool:
         return self._retired
 
@@ -415,7 +411,13 @@ class SessionAuth:
         # The save callback may itself have retired the owner; a retired owner
         # installs no cookies, and its caller gets the retired error.
         self.check_active()
-        self._load_cookies(tokens["website_cookies"])
+        # Install the cookies the token exchange handed back. The cookie domain
+        # has to match the domain the session was issued for or requests
+        # silently fail (ref/00 §2).
+        if pairs := cookie_pairs(tokens["website_cookies"]):
+            self._client.cookie_jar.update_cookies(
+                pairs, response_url=URL(f"https://{self._domain}")
+            )
 
     def _apply_tokens(self, tokens: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Validate and commit a token reply; return the root and ``macDms`` it replaced."""
@@ -449,17 +451,6 @@ class SessionAuth:
         if persisted is not False:
             self.emit("credentials.persisted", rt_fingerprint=fingerprint(self._refresh_token),
                       rt_changed=old_rt != self._refresh_token, mac_changed=old_mac != self._mac_dms)
-
-    def _load_cookies(self, cookies: Any) -> None:
-        """Install the cookies the token exchange handed back.
-
-        The cookie domain has to match the domain the session was issued for or
-        requests silently fail (ref/00 §2).
-        """
-        if pairs := cookie_pairs(cookies):
-            self._client.cookie_jar.update_cookies(
-                pairs, response_url=URL(f"https://{self._domain}")
-            )
 
     async def _async_rebuild_web_session(self) -> None:
         """Rebuild derived web credentials without registering a device again."""
