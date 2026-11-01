@@ -2,8 +2,9 @@
 
 A feature becomes a sensor when it reports a value and is read-only, or its
 value represents action status. Connectivity feeds the reachable attribute
-instead. The central capability plan assigns writable controls to their own
-platforms, independent of manufacturer or device category.
+instead. ``features.raw_entities`` assigns writable controls to their own
+platforms, independent of manufacturer, and of device category except that a
+scene trigger yields nothing.
 """
 
 from __future__ import annotations

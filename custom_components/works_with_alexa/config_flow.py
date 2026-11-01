@@ -93,7 +93,7 @@ def _checkbox_form(
 
 
 class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle the login/registration flow."""
+    """Browser sign-in, device and scene selection, and reauthentication."""
 
     VERSION = 1
     # 1.2: the account identity is stored as a one-way key, never the email.
@@ -250,8 +250,8 @@ class WorksWithAlexaConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="already_configured")
         self._abort_if_unique_id_configured()
 
-        # The sign-in that reaches the device picker last is kept and any other
-        # open one for this account is dropped silently (owner, 2026-10-31).
+        # The sign-in that reaches the device picker last is kept; any other
+        # open one for this account is dropped silently.
         for other in self._async_in_progress(
             include_uninitialized=True, match_context={"unique_id": account}
         ):

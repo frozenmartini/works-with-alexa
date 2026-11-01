@@ -7,8 +7,8 @@ Home Assistant's fan direction cannot express, ref/07), the Dreo fans' Mode
 Fan's speed. Nothing is absorbed into an assembled entity here.
 
 A thermostat's mode becomes a select too, offering exactly the modes the device
-advertises, so the owner's second integration can assemble a climate from it.
-That write was verified from Home Assistant on an ecobee on 2026-10-21.
+advertises, so the companion integration kitbash can assemble a climate from
+it. That write was verified from Home Assistant on an ecobee on 2026-10-21.
 """
 
 from __future__ import annotations

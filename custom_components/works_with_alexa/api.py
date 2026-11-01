@@ -10,8 +10,7 @@ credential, the auth lock, the scheduled renewal, retirement and the client's
 release live in that base class; this module adds the request helper, the
 GraphQL transport and the account operations.
 
-Response handling lives in :mod:`.protocol`, which has no I/O dependencies and
-carries the unit tests.
+Response handling lives in :mod:`.protocol`, which has no I/O dependencies.
 """
 
 from __future__ import annotations

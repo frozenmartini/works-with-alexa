@@ -7,9 +7,9 @@ discriminator, ref/07), the Dreo fans' speed ranges, the SmartDrape's "Opening"
 a constant -- they are device-specific.
 
 A thermostat's setpoints become numbers too, one per setpoint the device
-reports (target, lower, upper), so the owner's second integration can assemble
-a climate from them. Those writes were verified from Home Assistant on an
-ecobee on 2026-10-21.
+reports (target, lower, upper), so the companion integration kitbash can
+assemble a climate from them. Those writes were verified from Home Assistant on
+an ecobee on 2026-10-21.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Current setpoint, or None while the device reports the off sentinel."""
+        """Current value, or None while the device reports the off sentinel."""
         return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:

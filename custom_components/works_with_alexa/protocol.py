@@ -1,9 +1,8 @@
-"""Pure request/response handling for the Alexa account API.
+"""Request/response handling and the error types for the Alexa account API.
 
-Deliberately free of Home Assistant and aiohttp imports so the fiddly parts --
-errors arriving inside an HTTP 200, throttling signalled in the body, token
-expiry arithmetic -- can be tested without a network or a Home Assistant
-install. :mod:`.api` is the I/O shell around this.
+No Home Assistant or aiohttp imports: errors arriving inside an HTTP 200,
+throttling signalled in the body and token-expiry arithmetic live here.
+:mod:`.api` is the I/O shell around it.
 """
 
 from __future__ import annotations

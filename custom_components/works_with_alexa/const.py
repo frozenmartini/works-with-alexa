@@ -6,9 +6,10 @@ from typing import Final
 
 DOMAIN: Final = "works_with_alexa"
 
-# Deliberately no Home Assistant imports in this module: it keeps const.py and
-# models.py importable outside a Home Assistant environment, so the pure-logic
-# tests can run anywhere. PLATFORMS lives in __init__.py for the same reason.
+# Deliberately no Home Assistant imports in this module, so it and the pure
+# modules that import it (protocol.py, enrollment.py, session_auth.py, api.py)
+# import without Home Assistant. PLATFORMS lives in __init__.py for the same
+# reason.
 
 # --- Amazon device registration -------------------------------------------------
 # The iOS Alexa app. Both alexa-cookie2 and alexapy register as this device type,
@@ -67,8 +68,9 @@ CONF_MAC_DMS: Final = "mac_dms"
 
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 # The raw layer: endpoints exposed one entity per feature. Absent means all.
-# Entries may still carry "built_endpoints", the built layer's option until
-# 2026-09-13 (when the assembled Window Fan moved to kitbash); it is ignored.
+# Pre-release entries (before v0.1.0) may still carry "built_endpoints", the
+# built layer's option until 2026-09-13, when the assembled Window Fan moved to
+# kitbash; it is ignored.
 CONF_INCLUDE_ENDPOINTS: Final = "include_endpoints"
 CONF_INCLUDE_SCENES: Final = "include_scenes"
 

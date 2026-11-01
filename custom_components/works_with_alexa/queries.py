@@ -8,9 +8,9 @@ shapes are -- so this is reconstructed from ``ref/00`` §3, ``ref/04`` §1.2.2 a
   every property type the target devices can return. If the server rejects an
   unknown fragment the query fails wholesale, so keep this list to types the
   spec actually attests.
-* Field spellings are unsettled between the plugins' document and the live
-  write-ups (``threads/002`` Q5). Both spellings are requested via aliases where
-  they can coexist, and :mod:`.models` accepts either.
+* Field spellings were settled against the live schema (2026-09-13): one
+  spelling per property type is requested and :mod:`.models` reads those, then
+  ``_PROPERTY_FALLBACK`` (alone for feature types it has no entry for).
 """
 
 from __future__ import annotations
@@ -49,7 +49,8 @@ mutation ActivateScene($input: ActivateAutomationInput!) {
 # introspection on 2026-09-13, not guessed: an unknown fragment fails the whole
 # document. ActionConfiguration carries a vacuum's actions (Clean / Vacuum /
 # Mop, Dock / Empty), its request states (START / STOP / PAUSE / RESUME) and its
-# room targets.
+# room targets. The action and target fields are requested but not read since
+# 2026-10-30; only the action status is used.
 ENDPOINTS_QUERY = """
 query Endpoints {
   endpoints(endpointsQueryParams: {paginationParams: {disablePagination: true}}) {

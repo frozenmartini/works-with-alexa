@@ -4,10 +4,9 @@ One place for every classification rule, shared by the platforms, the pickers
 and the tests, so what a picker promises and what the platforms build cannot
 drift apart. No Home Assistant imports, so it runs anywhere :mod:`.models` does.
 
-One layer, raw (owner request, 2026-09-13; the built Window Fan ``fan`` entity
-that used to sit beside it moved to kitbash the same day): one Home Assistant
-entity per Alexa feature, nothing absorbed, using the plainest primitive that
-carries it:
+Raw only: one Home Assistant entity per Alexa feature, nothing absorbed, using
+the plainest primitive that carries it (whole devices are assembled in
+kitbash):
 
 * ``power`` and ``toggle`` -> switch;
 * ``mode`` -> select, with the device's own labels;
@@ -23,10 +22,10 @@ predicates and labels and the platforms' setups all derive from it.
 Classification uses feature operations, options and bounds, never
 manufacturer; the one category it reads is the scene trigger, which yields
 nothing. Unknown capabilities produce no writable entity until
-their protocol is implemented. Chosen through the device picker. The owner's
-second integration (kitbash)
-assembles these into HA- and HomeKit-shaped devices, so raw and complete beats
-clever. Raw entities carry the feature key in their unique id.
+their protocol is implemented. Endpoints are chosen through the device picker.
+The companion integration kitbash assembles these entities into HA- and
+HomeKit-shaped devices, so raw and complete beats clever. Raw entities carry
+the feature key in their unique id.
 """
 
 from __future__ import annotations
@@ -176,7 +175,10 @@ def entity_name(feature: Feature, prop: str | None = None) -> str:
 
 
 def entity_plan(endpoint: Endpoint) -> dict[str, list[str]]:
-    """Platform -> entity names the raw layer yields. What the picker promises.
+    """Platform -> entity names the raw layer yields for one endpoint.
+
+    Not called by the integration: the test suite, kept outside this
+    repository, pins the plan with it.
 
     The lock is named after the device (``None`` name in Home Assistant terms),
     shown here as the device's friendly name.

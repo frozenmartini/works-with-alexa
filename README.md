@@ -27,7 +27,6 @@ One entity per Alexa feature, for the devices you pick on the integration's opti
 
 Nothing is assembled here: whole devices (a fan from a power switch, a speed select and a
 direction select, say) are built from these entities by the companion Kitbash integration.
-The built Window Fan `fan` entity that earlier versions carried was removed on 2026-09-13.
 
 Entities come only from the features Alexa's server reports for each device. The
 device type the Alexa app shows plays no part: the Kohler Anthem Plus shower
@@ -223,9 +222,9 @@ Check availability before writing.
 
 ## Install
 
-**HACS** — Integrations → ⋮ → Custom repositories, add this repository as an *Integration*,
-then download **Works with Alexa** and restart Home Assistant. (Once this repository is in the
-HACS default store, it is searchable there directly and no custom repository is needed.)
+**HACS** — open HACS, search for **Works with Alexa**, download it and restart Home Assistant.
+(If it does not appear, add this repository in HACS under ⋮ → Custom repositories, type
+*Integration*.)
 
 **Manually** — copy `custom_components/works_with_alexa/` into `<config>/custom_components/`
 and restart Home Assistant.
@@ -238,7 +237,7 @@ integration icon. No Python requirements beyond Home Assistant itself.
 ## Development
 
 Pure logic (parsing, classification, protocol handling, registration) carries no Home Assistant
-imports, so it is testable with the standard library alone.
+imports.
 
 `features.py` is where the feature-to-entity rules live. Change the rules there and not at a call
 site — the platforms, the device picker and the tests all read them.

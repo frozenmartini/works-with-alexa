@@ -131,8 +131,8 @@ class Feature:
     def ordered(self) -> bool | None:
         """Whether mode options form a scale (Low..Turbo) or an unordered set.
 
-        Only an ORDERED mode may be mapped to a fan percentage; an UNORDERED one
-        must stay a select. ``None`` when the device does not say.
+        Published in ``wwa_feature`` so a consumer can tell a speed scale from
+        a set. ``None`` when the device does not say.
         """
         order = str(self.configuration.get("order", "")).upper()
         return {"ORDERED": True, "UNORDERED": False}.get(order)
