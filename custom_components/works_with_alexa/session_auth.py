@@ -43,7 +43,6 @@ from .protocol import (
     CredentialSaveError,
     SessionRetiredError,
     ThrottledError,
-    cookie_pairs,
     extract_tokens,
     parse_json,
     raise_for_throttle,
@@ -408,16 +407,11 @@ class SessionAuth:
         # Outside both trys: a failing save can never re-enter the retry loop
         # and re-send the pre-rotation root.
         self._save_rotation(*rotated)
-        # The save callback may itself have retired the owner; a retired owner
-        # installs no cookies, and its caller gets the retired error.
+        # A retirement during the reply read, or by the save callback itself,
+        # reaches the caller as the retired error. The token reply's own cookies
+        # are never installed: requests use the cookie exchange's, which runs
+        # before the next request (``_apply_tokens`` set the web refresh pending).
         self.check_active()
-        # Install the cookies the token exchange handed back. The cookie domain
-        # has to match the domain the session was issued for or requests
-        # silently fail (ref/00 §2).
-        if pairs := cookie_pairs(tokens["website_cookies"]):
-            self._client.cookie_jar.update_cookies(
-                pairs, response_url=URL(f"https://{self._domain}")
-            )
 
     def _apply_tokens(self, tokens: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Validate and commit a token reply; return the root and ``macDms`` it replaced."""

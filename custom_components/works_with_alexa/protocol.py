@@ -116,24 +116,7 @@ def extract_tokens(data: dict[str, Any]) -> dict[str, Any]:
         # A rotated refresh token must be kept or the next cold start fails.
         "refresh_token": bearer.get("refresh_token") or tokens.get("refresh_token"),
         "mac_dms": tokens.get("mac_dms"),
-        "website_cookies": tokens.get("website_cookies") or [],
     }
-
-
-def cookie_pairs(cookies: Any) -> list[tuple[str, str]]:
-    """Normalise the ``website_cookies`` list into name/value pairs.
-
-    Amazon capitalises these inconsistently between responses.
-    """
-    pairs: list[tuple[str, str]] = []
-    for cookie in cookies or []:
-        if not isinstance(cookie, dict):
-            continue
-        name = cookie.get("Name") or cookie.get("name")
-        value = cookie.get("Value") or cookie.get("value")
-        if name and value is not None:
-            pairs.append((str(name), str(value)))
-    return pairs
 
 
 def check_graphql_response(result: Any) -> dict[str, Any]:
