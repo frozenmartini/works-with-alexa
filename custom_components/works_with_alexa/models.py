@@ -30,6 +30,8 @@ FEATURE_ENDPOINT_HEALTH = "endpointHealth"
 FEATURE_LOCK = "lock"
 FEATURE_INVENTORY = "inventory"
 FEATURE_ACTION = "action"
+FEATURE_BRIGHTNESS = "brightness"
+FEATURE_COLOR_TEMPERATURE = "colorTemperature"
 
 # Splits camelCase for the label fallback: "temperatureSensor" -> "temperature Sensor".
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -54,6 +56,8 @@ _PRIMARY_PROPERTIES = {
     FEATURE_LOCK: ("lockState",),
     FEATURE_INVENTORY: ("inventoryLevelValue",),
     FEATURE_ACTION: ("actionStateValue",),
+    FEATURE_BRIGHTNESS: ("brightnessStateValue",),
+    FEATURE_COLOR_TEMPERATURE: ("colorTemperatureInKelvinStateValue",),
 }
 
 # Tried in order after a type's own spellings, and alone for types not listed above.

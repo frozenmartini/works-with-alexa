@@ -51,6 +51,10 @@ mutation ActivateScene($input: ActivateAutomationInput!) {
 # Mop, Dock / Empty), its request states (START / STOP / PAUSE / RESUME) and its
 # room targets. The action and target fields are requested but not read since
 # 2026-10-30; only the action status is used.
+#
+# The Brightness and ColorTemperature fragments are not from this project's own
+# captures: they are the spellings independent clients of this same endpoint send
+# (homebridge-alexa-smarthome, homebridge-alexa-sync, alexactl).
 ENDPOINTS_QUERY = """
 query Endpoints {
   endpoints(endpointsQueryParams: {paginationParams: {disablePagination: true}}) {
@@ -72,6 +76,8 @@ query Endpoints {
           ... on ToggleState { toggleStateValue }
           ... on Mode { modeValue { value } }
           ... on RangeValue { rangeValue { value } }
+          ... on Brightness { brightnessStateValue }
+          ... on ColorTemperature { colorTemperatureInKelvinStateValue }
           ... on TemperatureSensor { value { value scale } }
           ... on Setpoint { value { value scale } }
           ... on ThermostatMode { thermostatModeValue }
