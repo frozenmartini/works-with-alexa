@@ -6,6 +6,10 @@ discriminator, ref/07), the Dreo fans' speed ranges, the SmartDrape's "Opening"
 0..100 Percent. The bounds come from the device's own supportedRange, never from
 a constant -- they are device-specific.
 
+A writable ``brightness`` feature becomes a number too. It is the one exception
+to device bounds: Alexa sends no configuration for it, and its 0..100 is fixed by
+the API.
+
 A thermostat's setpoints become numbers too, one per setpoint the device
 reports (target, lower, upper), so the companion integration kitbash can
 assemble a climate from them. Those writes were verified from Home Assistant on
@@ -22,15 +26,15 @@ from homeassistant.components.number import (
     NumberEntity,
     NumberMode,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
-from .features import SET_TARGET_SETPOINT
-from .models import Endpoint, Feature
+from .features import SET_BRIGHTNESS, SET_TARGET_SETPOINT
+from .models import FEATURE_BRIGHTNESS, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +75,9 @@ async def async_setup_entry(
     entities: list[NumberEntity] = []
     setpoints: dict[tuple[str, str], WorksWithAlexaSetpoint] = {}
     for endpoint, feature, prop in selected_entities(coordinator, "number"):
-        if prop is None:
+        if feature.name == FEATURE_BRIGHTNESS:
+            entities.append(WorksWithAlexaBrightness(coordinator, endpoint, feature))
+        elif prop is None:
             entities.append(WorksWithAlexaNumber(coordinator, endpoint, feature))
         else:
             setpoint = WorksWithAlexaSetpoint(coordinator, endpoint, feature, prop)
@@ -116,6 +122,31 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
         await self.async_control(
             "setRangeValue", {"rangeValue": payload}, assume=payload
         )
+
+
+class WorksWithAlexaBrightness(WorksWithAlexaEntity, NumberEntity):
+    """An endpoint's brightness, as a percentage.
+
+    Amazon rejects values outside 0..100 with INVALID_VALUE. The ``{"brightness":
+    45}`` payload is what public clients of this API send, captured from the Alexa
+    web UI. Like a range, it reads unknown while the device reports the off sentinel.
+    """
+
+    _attr_mode = NumberMode.SLIDER
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _wwa_operations = frozenset({SET_BRIGHTNESS})
+
+    @property
+    def native_value(self) -> float | None:
+        """Current level, or None while the device reports the off sentinel."""
+        return _float_or_none(self.reading)
+
+    async def async_set_native_value(self, value: float) -> None:
+        level = round(value)
+        await self.async_control(SET_BRIGHTNESS, {"brightness": level}, assume=level)
 
 
 class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):

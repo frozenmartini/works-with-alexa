@@ -38,7 +38,7 @@ def _role(feature: Feature, prop: str | None) -> str | None:
         return None
     capability_role = {
         "power": "power", "lock": "lock", "temperatureSensor": "temperature",
-        "contactSensor": "contact",
+        "contactSensor": "contact", "brightness": "brightness",
     }.get(feature.name)
     if capability_role:
         return capability_role
