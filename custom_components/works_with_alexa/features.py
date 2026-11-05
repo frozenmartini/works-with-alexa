@@ -12,6 +12,7 @@ kitbash):
 * ``mode`` -> select, with the device's own labels;
 * writable ``range`` -> number, with the device's own bounds;
 * writable ``brightness`` -> number, 0..100 percent;
+* writable ``colorTemperature`` -> number, in kelvin;
 * ``thermostat`` -> one number per setpoint it reports (target, lower, upper)
   and a select for its mode;
 * ``lock`` -> lock (a lock/unlock pair has no plainer primitive);
@@ -37,6 +38,7 @@ from typing import Any, NamedTuple
 from .models import (
     FEATURE_ACTION,
     FEATURE_BRIGHTNESS,
+    FEATURE_COLOR_TEMPERATURE,
     FEATURE_CONNECTIVITY,
     FEATURE_ENDPOINT_HEALTH,
     FEATURE_LOCK,
@@ -58,6 +60,7 @@ THERMOSTAT_MODE_PROPERTY = "thermostatMode"
 SET_THERMOSTAT_MODE = "setThermostatMode"
 SET_TARGET_SETPOINT = "setTargetSetpoint"
 SET_BRIGHTNESS = "setBrightness"
+SET_COLOR_TEMPERATURE = "setColorTemperature"
 
 # A scene trigger is a routine's starting point, not a device: it has no state
 # to control or read, so it yields nothing whatever features it carries.
@@ -116,9 +119,10 @@ def raw_entities(endpoint: Endpoint) -> list[RawEntity]:
     * every mode that can be set and lists its options (the speed mode
       included), then the thermostat's mode where it can be set and lists its
       modes, as selects;
-    * every range that can be set and has both bounds, then brightness where it
-      can be set, then one number per setpoint the thermostat reports, in
-      ``SETPOINT_PROPERTIES`` order, where its target can be set;
+    * every range that can be set and has both bounds, then brightness and color
+      temperature where they can be set, then one number per setpoint the
+      thermostat reports, in ``SETPOINT_PROPERTIES`` order, where its target can
+      be set;
     * :func:`sensor_features`, which reads the current poll.
 
     The thermostat counts only when writable,
@@ -160,6 +164,9 @@ def raw_entities(endpoint: Endpoint) -> list[RawEntity]:
     brightness = endpoint.feature(FEATURE_BRIGHTNESS)
     if brightness is not None and SET_BRIGHTNESS in brightness.operations:
         entities.append(RawEntity("number", brightness, None))
+    color_temperature = endpoint.feature(FEATURE_COLOR_TEMPERATURE)
+    if color_temperature is not None and SET_COLOR_TEMPERATURE in color_temperature.operations:
+        entities.append(RawEntity("number", color_temperature, None))
     if thermostat is not None and SET_TARGET_SETPOINT in thermostat.operations:
         entities.extend(
             RawEntity("number", thermostat, name)

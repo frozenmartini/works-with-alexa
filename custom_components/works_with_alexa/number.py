@@ -10,6 +10,10 @@ A writable ``brightness`` feature becomes a number too. It is the one exception
 to device bounds: Alexa sends no configuration for it, and its 0..100 is fixed by
 the API.
 
+A writable ``colorTemperature`` feature becomes a number in kelvin. Alexa reports
+no bounds for it either, so these are the Smart Home API's; the device rejects or
+falls back from what it cannot do.
+
 A thermostat's setpoints become numbers too, one per setpoint the device
 reports (target, lower, upper), so the companion integration kitbash can
 assemble a climate from them. Those writes were verified from Home Assistant on
@@ -33,8 +37,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
-from .features import SET_BRIGHTNESS, SET_TARGET_SETPOINT
-from .models import FEATURE_BRIGHTNESS, Endpoint, Feature
+from .features import SET_BRIGHTNESS, SET_COLOR_TEMPERATURE, SET_TARGET_SETPOINT
+from .models import FEATURE_BRIGHTNESS, FEATURE_COLOR_TEMPERATURE, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +81,8 @@ async def async_setup_entry(
     for endpoint, feature, prop in selected_entities(coordinator, "number"):
         if feature.name == FEATURE_BRIGHTNESS:
             entities.append(WorksWithAlexaBrightness(coordinator, endpoint, feature))
+        elif feature.name == FEATURE_COLOR_TEMPERATURE:
+            entities.append(WorksWithAlexaColorTemperature(coordinator, endpoint, feature))
         elif prop is None:
             entities.append(WorksWithAlexaNumber(coordinator, endpoint, feature))
         else:
@@ -147,6 +153,34 @@ class WorksWithAlexaBrightness(WorksWithAlexaEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         level = round(value)
         await self.async_control(SET_BRIGHTNESS, {"brightness": level}, assume=level)
+
+
+class WorksWithAlexaColorTemperature(WorksWithAlexaEntity, NumberEntity):
+    """An endpoint's color temperature, in kelvin.
+
+    Deliberately no device class: it would offer unit conversion, and this is a
+    color, not a temperature reading. The ``{"colorTemperatureInKelvin": 3000}``
+    payload is what public clients of this API send. A value the device falls back
+    from shows what it really kept once the 30 second assumption expires.
+    """
+
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = 1000
+    _attr_native_max_value = 10000
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "K"
+    _wwa_operations = frozenset({SET_COLOR_TEMPERATURE})
+
+    @property
+    def native_value(self) -> float | None:
+        """Current kelvin, or None while the device reports the off sentinel."""
+        return _float_or_none(self.reading)
+
+    async def async_set_native_value(self, value: float) -> None:
+        kelvin = round(value)
+        await self.async_control(
+            SET_COLOR_TEMPERATURE, {"colorTemperatureInKelvin": kelvin}, assume=kelvin
+        )
 
 
 class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):

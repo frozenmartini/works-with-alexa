@@ -22,6 +22,7 @@ One entity per Alexa feature, for the devices you pick on the integration's opti
 | `mode` | `select` | Options are Alexa's labels (Low/Medium/High/Turbo, Exhaust/Direct, Auto/Natural/Normal/Sleep) |
 | `range`, writable | `number` | Bounds and step are the device's own (0–6, 60–90, 0–100 Percent…) |
 | `brightness`, writable | `number` | 0–100 %, step 1. Alexa gives no bounds for it; these are the API's own |
+| `colorTemperature`, writable | `number` | 1000–10000 K, step 1. Alexa gives no bounds for it; these are the API's own, and a device may keep only some values |
 | `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Alexa gives no setpoint bounds, so these are fixed: 40–100 °F step 1, 5–38 °C step 0.5, 278–311 K step 0.5 |
 | `lock` | `lock` | Locked / unlocked / jammed |
 | anything read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING |
@@ -120,6 +121,7 @@ triggers yield nothing. The rules:
 - `mode` with `setMode` and advertised options → select, preserving Alexa's labels.
 - `range` with `setRangeValue` and bounds → number, preserving bounds and step.
 - `brightness` with `setBrightness` → number, 0–100 %.
+- `colorTemperature` with `setColorTemperature` → number, in kelvin.
 - Thermostat setpoints/modes → numbers/selects when their setters are advertised.
 - `lock` with lock/unlock commands → lock.
 - Read-only values and action status → sensors.
@@ -183,7 +185,7 @@ For example, an oscillation-angle number can publish:
 }
 ```
 
-Hints include `power`, `brightness`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
+Hints include `power`, `brightness`, `color_temperature`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
 `mode`, `temperature`, `setpoint`, `heating`, `cooling`, `lock`, `contact`, `light`,
 and `cover`. Manufacturer, model, device name/category, numeric instances and
 select option labels do not determine roles. An ordered mode alone does not
@@ -220,6 +222,7 @@ Check availability before writing.
 | Thermostat setpoints and mode | Verified live from Home Assistant on an ecobee: mode, lower and upper setpoints confirmed by the next poll. In AUTO, a target-setpoint write moved both lower and upper on the device, and Alexa does not report the target back |
 | Lock / unlock | Verified live from Home Assistant on a Lockly smart lock: both commands accepted, the door actuated, and the next poll confirmed the state |
 | Brightness | Verified live from Home Assistant on PureOptics LED under-cabinet lights, with the same change on v0.1.4: levels confirmed by the next poll, and both lights visibly dimmed |
+| Color temperature | Verified live the same way on the same lights, which visibly changed. They kept 2200, 2700, 4000, 5500 and 7000 K; other values read back as one of those |
 | Vacuum (Roborock) | Verified live: the power switch, and cleaning and dock status as sensors. Alexa's cleaning actions are read as status, not sent |
 | Kohler Anthem and Anthem Plus shower system (Alexa type Other) | Verified live: every entity mapped from their reported features |
 
