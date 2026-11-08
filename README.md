@@ -21,9 +21,13 @@ One entity per Alexa feature, for the devices you pick on the integration's opti
 | `power`, `toggle` | `switch` | Power is named "Power"; toggles take Alexa's label (Auto, Mute, Oscillate…) |
 | `mode` | `select` | Options are Alexa's labels (Low/Medium/High/Turbo, Exhaust/Direct, Auto/Natural/Normal/Sleep) |
 | `range`, writable | `number` | Bounds and step are the device's own (0–6, 60–90, 0–100 Percent…) |
-| `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Alexa gives no setpoint bounds, so these are fixed: 40–100 °F step 1, 5–38 °C step 0.5, 278–311 K step 0.5 |
+| `brightness`, `percentage`, `powerLevel`, writable | `number` | Whole numbers 0–100, Alexa's own rule for these (no device declares a range); brightness and percentage in % |
+| `colorTemperature`, writable | `number` | 1,000–10,000 K, Alexa's own rule; a bulb that covers less goes to its nearest value |
+| `color`, writable | three `number`s: "Color Hue", "Color Saturation", "Color Brightness" | Alexa's own rule: hue 0–360, saturation and brightness 0–1. Setting one sends all three; shown as Alexa reports them, even while the light is off |
+| `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Bounds are Alexa's allowed range when the device sends one, otherwise 40–120 °F step 1, 5–50 °C step 0.1, 278–323 K step 0.1 |
 | `lock` | `lock` | Locked / unlocked / jammed |
-| anything read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING |
+| `motionSensor` | `binary_sensor` | Motion: on when Alexa reports DETECTED, read at each poll |
+| anything else read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING; a speaker's volume, a light sensor's reading (no unit, since Alexa gives none), a security panel's arm state and its siren state |
 
 Nothing is assembled here: whole devices (a fan from a power switch, a speed select and a
 direction select, say) are built from these entities by the companion Kitbash integration.
@@ -34,7 +38,7 @@ system, which the Alexa app lists as Other, is mapped from its reported features
 like any other device. Only endpoints with supported capabilities are offered,
 regardless of category or manufacturer; scene-trigger endpoints are never
 offered as devices. Devices
-that yield only sensors are marked read-only in the picker. An application endpoint with power controls can be selectable;
+that yield only sensors or binary sensors are marked read-only in the picker. An application endpoint with power controls can be selectable;
 an Echo Show with a temperature value can yield a sensor. Scenes have a separate
 picker during setup and follow the device picker in Options. They start entirely
 unselected, including on existing installations. Selected scenes appear as individual `button` entities grouped
@@ -42,9 +46,9 @@ under a single **Scenes** device card. Pressing a button activates its Alexa sce
 it has no on/off state. Adding all devices does not select any scenes.
 
 Raw endpoint entities carry a `reachable` attribute (Alexa's own connectivity flag) when
-Alexa reports the device's connectivity. While a device's power reports off, its writable
-range numbers and mode selects read unknown rather than the `0` Alexa reports. Thermostat
-setpoints and Thermostat Mode always show what Alexa reports.
+Alexa reports the device's connectivity. While a device's power reports off, a writable
+number or mode select that Alexa reports as `0` reads unknown rather than `0`. Thermostat
+setpoints, Thermostat Mode and the colour components always show what Alexa reports.
 
 After setup, open the entry's **Options** (gear) in Settings → Devices & services →
 Works with Alexa. **Add, edit or remove devices** opens the device checkboxes,
@@ -118,9 +122,12 @@ triggers yield nothing. The rules:
 - `power`/`toggle` with on and off commands → switch.
 - `mode` with `setMode` and advertised options → select, preserving Alexa's labels.
 - `range` with `setRangeValue` and bounds → number, preserving bounds and step.
+- `brightness`, `colorTemperature`, `percentage`, `powerLevel` with their set
+  command → number, with Alexa's fixed bounds.
+- `color` with `setColor` → a number each for hue, saturation and brightness.
 - Thermostat setpoints/modes → numbers/selects when their setters are advertised.
 - `lock` with lock/unlock commands → lock.
-- Read-only values and action status → sensors.
+- Read-only motion → binary sensor; other read-only values and action status → sensors.
 
 Thus a fan's speed can be a select or a number depending on its capability.
 Anthem and Anthem Plus expose their advertised power controls as switches even
@@ -158,9 +165,9 @@ account automations and do not carry endpoint feature metadata.
 | `instance` | Original instance (including numeric values), or `null` |
 | `label` | Alexa's feature label, with the existing readable fallback when absent; unaffected by HA entity renaming |
 | `operations` | Advertised operation names, as a sorted list; these may include operations the entity does not implement |
-| `writable` | Whether this specific entity supports writing with its advertised commands; always `false` for sensors, including action-status sensors |
+| `writable` | Whether this specific entity supports writing with its advertised commands; always `false` for sensors and binary sensors, including action-status sensors |
 | `ordered` | `true` for explicitly ORDERED mode features, `false` for explicitly UNORDERED ones; `null` when unknown or not a mode feature |
-| `property` | Thermostat child property (`targetSetpoint`, `lowerSetpoint`, `upperSetpoint`, or `thermostatMode`); `null` otherwise |
+| `property` | Thermostat child property (`targetSetpoint`, `lowerSetpoint`, `upperSetpoint`, or `thermostatMode`), or colour component (`hue`, `saturation`, `brightness`); `null` otherwise |
 | `role` | Optional semantic hint, published only when supported by the capability, original label, or semantic instance; omitted when uncertain or conflicting |
 
 For example, an oscillation-angle number can publish:

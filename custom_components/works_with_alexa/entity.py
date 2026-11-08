@@ -8,6 +8,7 @@ fan speed (ref/06, ref/07), so it is threaded through every write here.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -59,12 +60,14 @@ def _same_value(reported: Any, assumed: Any) -> bool:
 
     Numeric where both sides are numeric: a setpoint sent as ``74`` reads back
     as ``74.0``, and comparing those as text would never match, leaving the
-    assumption to sit until it timed out instead of reconciling.
+    assumption to sit until it timed out instead of reconciling. Close, not
+    equal: Alexa stores some values as 32-bit floats, so a setpoint written as
+    37.7 reads back as 37.70000076293945. The tolerance is far below any step.
     """
     if reported is None or assumed is None:
         return reported is assumed
     try:
-        return float(reported) == float(assumed)
+        return math.isclose(float(reported), float(assumed), rel_tol=1e-6, abs_tol=1e-9)
     except (TypeError, ValueError):
         return str(reported) == str(assumed)
 
@@ -178,6 +181,18 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
             return feature.property_value(self._prop)
         return self.endpoint.live_value(feature)
 
+    def _confirms(self, assumed: Any) -> bool:
+        """Whether this poll reports the value a pending write assumed.
+
+        A whole feature is also checked before the power-off filter: a
+        brightness written as 0 can turn the device off, and the ``0`` it then
+        reports confirms the write even though it reads as unknown.
+        """
+        if _same_value(self._reported(), assumed):
+            return True
+        feature = self.feature
+        return feature is not None and not self._prop and _same_value(feature.value, assumed)
+
     def _assume(self, value: Any) -> _OptimisticState:
         """Hold a value locally until the device confirms it or it goes stale."""
         record = _OptimisticState(value, time.monotonic() + OPTIMISTIC_TIMEOUT, self._pending)
@@ -230,7 +245,7 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         now = time.monotonic()
         record = self._pending
         if record is not None:
-            confirmed = _same_value(self._reported(), record.value)
+            confirmed = self._confirms(record.value)
             if confirmed or now >= record.deadline:
                 self._pending = None
                 event(_LOGGER, "optimistic.confirmed" if confirmed else "optimistic.expired", feature=self._key)

@@ -35,6 +35,7 @@ from .protocol import (
     AuthError,
     check_control_result,
     check_graphql_response,
+    null_field_errors_only,
     parse_json,
     raise_for_throttle,
 )
@@ -139,7 +140,11 @@ class AmazonAlexaSession(SessionAuth):
             raise
 
     async def _async_graphql(
-        self, query: str, variables: dict[str, Any] | None = None
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        allow_null_fields: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"query": query}
         if variables is not None:
@@ -151,9 +156,11 @@ class AmazonAlexaSession(SessionAuth):
             )
             if isinstance(result, dict) and result.get("errors"):
                 errors = result["errors"]
-                event(_LOGGER, "graphql.errors", level=logging.ERROR, error_count=len(errors))
+                tolerated = allow_null_fields and null_field_errors_only(result)
+                event(_LOGGER, "graphql.errors", level=logging.WARNING if tolerated else logging.ERROR,
+                      error_count=len(errors), tolerated=tolerated)
             try:
-                return check_graphql_response(result)
+                return check_graphql_response(result, allow_null_fields=allow_null_fields)
             except AuthError:
                 self.emit("api.rejected", level=logging.ERROR, stage="graphql",
                           root_token_rejected=False, new_login_required=True)
@@ -212,7 +219,7 @@ class AmazonAlexaSession(SessionAuth):
 
     async def async_get_endpoints(self) -> dict[str, Endpoint]:
         """Fetch every endpoint with its live state, in one request."""
-        data = await self._async_graphql(ENDPOINTS_QUERY)
+        data = await self._async_graphql(ENDPOINTS_QUERY, allow_null_fields=True)
         items = (data.get("endpoints") or {}).get("items") or []
 
         endpoints: dict[str, Endpoint] = {}

@@ -51,6 +51,15 @@ mutation ActivateScene($input: ActivateAutomationInput!) {
 # Mop, Dock / Empty), its request states (START / STOP / PAUSE / RESUME) and its
 # room targets. The action and target fields are requested but not read since
 # 2026-10-30; only the action status is used.
+#
+# The Brightness to SirenState fragments and the allowed-temperature-range
+# fragment are spelled from the 2026-11-07 schema introspection; the whole
+# document validated live on 2026-11-08 UTC. No device yet has sent the range
+# or a power level. `Volume.value` is aliased: a second `value` field whose
+# leaf is an Int, beside the temperature types' Float, is a GraphQL field
+# conflict that would fail the whole document. `serialNumber { value { text } }`
+# is the spelling alexa-remote2 8.0.5 sends on this same `endpoints.items`
+# selection.
 ENDPOINTS_QUERY = """
 query Endpoints {
   endpoints(endpointsQueryParams: {paginationParams: {disablePagination: true}}) {
@@ -61,6 +70,7 @@ query Endpoints {
       enablement
       model { value { text } }
       manufacturer { value { text } }
+      serialNumber { value { text } }
       features {
         name
         instance
@@ -79,6 +89,22 @@ query Endpoints {
           ... on Reachability { reachabilityStatusValue }
           ... on InventoryLevel { inventoryLevelValue { type value unit } }
           ... on ActionState { actionStateValue { status actionId targetIds } }
+          ... on Brightness { brightnessStateValue }
+          ... on Color { colorStateValue { hue saturation brightness } }
+          ... on ColorTemperature { colorTemperatureInKelvinStateValue }
+          ... on Percentage { percentageValue }
+          ... on PowerLevel { powerLevelValue }
+          ... on Volume { volumeValue: value { value } }
+          ... on DetectionState { detectionStateValue }
+          ... on Illuminance { illuminanceValue { value } }
+          ... on ArmState { armStateValue }
+          ... on SirenState { sirenStateValue { state } }
+          ... on ThermostatConfigurationAllowedTemperatureRange {
+            thermostatAllowedTemperatureRangeValue {
+              heating { minimum { value scale } maximum { value scale } }
+              cooling { minimum { value scale } maximum { value scale } }
+            }
+          }
         }
         configuration {
           __typename

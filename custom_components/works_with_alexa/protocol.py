@@ -119,10 +119,35 @@ def extract_tokens(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def check_graphql_response(result: Any) -> dict[str, Any]:
-    """Unwrap a GraphQL reply, raising on the errors hidden inside a 200."""
+# Amazon breaking its own schema: a field declared never-null came back null.
+# GraphQL then nulls the nearest field that may be null and still returns the
+# rest, so the reply is usable minus that value.
+NULL_FIELD_ERROR = "NullValueInNonNullableField"
+
+
+def null_field_errors_only(result: Any) -> bool:
+    """Whether every error beside the data is a never-null field that came back null."""
+    errors = result.get("errors") if isinstance(result, dict) else None
+    return bool(errors) and result.get("data") is not None and all(
+        isinstance(error, dict)
+        and ((error.get("extensions") or {}).get("classification") or error.get("classification"))
+        == NULL_FIELD_ERROR
+        for error in errors
+    )
+
+
+def check_graphql_response(result: Any, *, allow_null_fields: bool = False) -> dict[str, Any]:
+    """Unwrap a GraphQL reply, raising on the errors hidden inside a 200.
+
+    With ``allow_null_fields``, a reply whose only errors are never-null fields
+    that came back null is returned as it is: one device's missing value must
+    not fail a read of every device. A write never allows this.
+    """
     if not isinstance(result, dict):
         raise ApiConnectionError("GraphQL response was not an object")
+
+    if allow_null_fields and null_field_errors_only(result):
+        return result["data"]
 
     if errors := result.get("errors"):
         message = "; ".join(

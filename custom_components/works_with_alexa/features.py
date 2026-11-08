@@ -11,10 +11,22 @@ kitbash):
 * ``power`` and ``toggle`` -> switch;
 * ``mode`` -> select, with the device's own labels;
 * writable ``range`` -> number, with the device's own bounds;
+* writable ``brightness``, ``colorTemperature``, ``percentage`` and
+  ``powerLevel`` -> number, with Alexa's fixed bounds (``FIXED_RANGES``);
+* writable ``color`` -> three numbers, one per component (hue, saturation,
+  brightness), the way a thermostat yields one per setpoint;
 * ``thermostat`` -> one number per setpoint it reports (target, lower, upper)
   and a select for its mode;
 * ``lock`` -> lock (a lock/unlock pair has no plainer primitive);
-* anything read-only with a value -> sensor.
+* ``motionSensor`` with a value -> binary sensor;
+* anything else read-only with a value -> sensor: a speaker's volume, a light
+  sensor's illuminance, a security panel's arm state, its siren's state.
+
+Nothing to map (2026-11-07 audit): ``launcher`` (its target reads NOT_FOUND
+and its catalogs fail on Amazon's side), ``remoteVideoPlayer``,
+``detectionEvents`` and ``deviceDiscovery.hub`` (configuration only; events
+would need push), and ``rtcSession`` (WebRTC signalling operations only). None
+reports a value, so the rules below yield nothing for them.
 
 ``raw_entities`` is the one decision; the plan, the writable keys, the picker's
 predicates and labels and the platforms' setups all derive from it.
@@ -35,11 +47,17 @@ from typing import Any, NamedTuple
 
 from .models import (
     FEATURE_ACTION,
+    FEATURE_BRIGHTNESS,
+    FEATURE_COLOR,
+    FEATURE_COLOR_TEMPERATURE,
     FEATURE_CONNECTIVITY,
     FEATURE_ENDPOINT_HEALTH,
     FEATURE_LOCK,
     FEATURE_MODE,
+    FEATURE_MOTION_SENSOR,
+    FEATURE_PERCENTAGE,
     FEATURE_POWER,
+    FEATURE_POWER_LEVEL,
     FEATURE_RANGE,
     FEATURE_THERMOSTAT,
     FEATURE_TOGGLE,
@@ -55,6 +73,20 @@ SETPOINT_PROPERTIES = ("targetSetpoint", "lowerSetpoint", "upperSetpoint")
 THERMOSTAT_MODE_PROPERTY = "thermostatMode"
 SET_THERMOSTAT_MODE = "setThermostatMode"
 SET_TARGET_SETPOINT = "setTargetSetpoint"
+
+# A colour's three components, each its own number, with Alexa's own rule
+# (ColorController): hue 0-360 degrees, saturation and brightness 0-1, as
+# (min, max, step). No unit: Home Assistant has none for either scale. All three
+# exist whenever the colour can be set, whether or not the current poll reports
+# a value: the operation defines them, and a bulb that is unreachable at setup
+# still has a colour.
+COLOR_BOUNDS = {
+    "hue": (0.0, 360.0, 1.0),
+    "saturation": (0.0, 1.0, 0.01),
+    "brightness": (0.0, 1.0, 0.01),
+}
+COLOR_COMPONENTS = tuple(COLOR_BOUNDS)
+SET_COLOR = "setColor"
 
 # A scene trigger is a routine's starting point, not a device: it has no state
 # to control or read, so it yields nothing whatever features it carries.
@@ -73,13 +105,45 @@ _NEVER_SENSORS = frozenset({FEATURE_CONNECTIVITY, FEATURE_ENDPOINT_HEALTH})
 # operations in another (2026-09-13), so the reading must not depend on it.
 _ALWAYS_SENSORS = frozenset({FEATURE_ACTION})
 
+# Read-only features with a two-state value, which become binary sensors
+# rather than sensors. Motion reports DETECTED or NOT_DETECTED.
+BINARY_SENSORS = frozenset({FEATURE_MOTION_SENSOR})
+
+# The platforms that only read.
+READ_ONLY_PLATFORMS = frozenset({"sensor", "binary_sensor"})
+
+
+class FixedRange(NamedTuple):
+    """Alexa's own bounds for a writable value, and how it is written."""
+
+    minimum: int
+    maximum: int
+    step: int
+    operation: str
+    payload_key: str  # the property's bare name, the rule every confirmed write follows
+    unit: str | None  # Home Assistant's spelling; Alexa's power level is unitless
+
+
+# Writable values whose range is Alexa's fixed rule, never declared by the
+# device (Smart Home API, read 2026-11-07): whole numbers 0-100, colour
+# temperature 1,000-10,000 K. A device covering less goes to its nearest value.
+# The payload keys follow the confirmed rule but are not yet seen live.
+FIXED_RANGES = {
+    FEATURE_BRIGHTNESS: FixedRange(0, 100, 1, "setBrightness", "brightness", "%"),
+    FEATURE_COLOR_TEMPERATURE: FixedRange(
+        1000, 10000, 1, "setColorTemperature", "colorTemperatureInKelvin", "K"
+    ),
+    FEATURE_PERCENTAGE: FixedRange(0, 100, 1, "setPercentage", "percentage", "%"),
+    FEATURE_POWER_LEVEL: FixedRange(0, 100, 1, "setPowerLevel", "powerLevel", None),
+}
+
 
 class RawEntity(NamedTuple):
     """One Home Assistant entity the raw layer yields for an endpoint."""
 
-    platform: str  # "lock" | "switch" | "select" | "number" | "sensor"
+    platform: str  # "lock" | "switch" | "select" | "number" | "sensor" | "binary_sensor"
     feature: Feature
-    prop: str | None  # a thermostat child's property, else None
+    prop: str | None  # a thermostat child's property or a colour component, else None
 
 
 def sensor_features(endpoint: Endpoint) -> list[Feature]:
@@ -113,10 +177,13 @@ def raw_entities(endpoint: Endpoint) -> list[RawEntity]:
     * every mode that can be set and lists its options (the speed mode
       included), then the thermostat's mode where it can be set and lists its
       modes, as selects;
-    * every range that can be set and has both bounds, then one number per
-      setpoint the thermostat reports, in ``SETPOINT_PROPERTIES`` order, where
-      its target can be set;
-    * :func:`sensor_features`, which reads the current poll.
+    * every range that can be set and has both bounds, then every
+      ``FIXED_RANGES`` feature that can be set, then one number per
+      ``COLOR_COMPONENTS`` entry where the colour can be set, then one number
+      per setpoint the thermostat reports, in ``SETPOINT_PROPERTIES`` order,
+      where its target can be set;
+    * :func:`sensor_features`, which reads the current poll: the
+      ``BINARY_SENSORS`` ones as binary sensors, the rest as sensors.
 
     The thermostat counts only when writable,
     which each of its two tests implies, since each names an operation.
@@ -154,13 +221,30 @@ def raw_entities(endpoint: Endpoint) -> list[RawEntity]:
         if "setRangeValue" in range_.operations
         and range_.minimum is not None and range_.maximum is not None
     )
+    entities.extend(
+        RawEntity("number", feature, None)
+        for feature in endpoint.features.values()
+        if feature.name in FIXED_RANGES
+        and FIXED_RANGES[feature.name].operation in feature.operations
+    )
+    color = endpoint.feature(FEATURE_COLOR)
+    if color is not None and SET_COLOR in color.operations:
+        entities.extend(RawEntity("number", color, name) for name in COLOR_COMPONENTS)
     if thermostat is not None and SET_TARGET_SETPOINT in thermostat.operations:
         entities.extend(
             RawEntity("number", thermostat, name)
             for name in SETPOINT_PROPERTIES
             if name in thermostat.properties
         )
-    entities.extend(RawEntity("sensor", feature, None) for feature in sensor_features(endpoint))
+    readable = sensor_features(endpoint)
+    entities.extend(
+        RawEntity("binary_sensor", feature, None)
+        for feature in readable if feature.name in BINARY_SENSORS
+    )
+    entities.extend(
+        RawEntity("sensor", feature, None)
+        for feature in readable if feature.name not in BINARY_SENSORS
+    )
     return entities
 
 
@@ -170,7 +254,13 @@ def entities_of(endpoint: Endpoint, platform: str) -> list[RawEntity]:
 
 
 def entity_name(feature: Feature, prop: str | None = None) -> str:
-    """The Home Assistant name of one feature, or of one property of it."""
+    """The Home Assistant name of one feature, or of one property of it.
+
+    A colour component carries the feature's label first: "Color Brightness"
+    beside the ``brightness`` feature's own "Brightness" on the same bulb.
+    """
+    if prop and feature.name == FEATURE_COLOR:
+        return f"{feature.label} {humanise(prop)}"
     return humanise(prop) if prop else feature.label
 
 
@@ -195,7 +285,11 @@ def entity_plan(endpoint: Endpoint) -> dict[str, list[str]]:
 
 def writable_feature_keys(endpoint: Endpoint) -> set[str]:
     """Feature identities represented by supported writable entities."""
-    return {entity.feature.key for entity in raw_entities(endpoint) if entity.platform != "sensor"}
+    return {
+        entity.feature.key
+        for entity in raw_entities(endpoint)
+        if entity.platform not in READ_ONLY_PLATFORMS
+    }
 
 
 def produces_entities(endpoint: Endpoint) -> bool:
