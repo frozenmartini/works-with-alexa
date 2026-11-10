@@ -193,8 +193,9 @@ class WorksWithAlexaColorComponent(WorksWithAlexaEntity, NumberEntity):
     own entities read them: an unconfirmed write to one is sent, not the polled
     value it replaced. Like a setpoint, a component shows what Alexa reports
     even while the device is off: a bulb that is off keeps reporting its last
-    colour (2026-11-07). The payload shape follows Alexa's directive
-    but has not yet been seen accepted live (2026-11-07).
+    colour (2026-11-07). Alexa accepted this payload live (2026-11-08), and a
+    hue or saturation write reads back; a bulb may go on reporting a colour
+    brightness of 1.0 after accepting another, and the entity shows that.
     """
 
     _attr_mode = NumberMode.BOX
