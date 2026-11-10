@@ -298,6 +298,11 @@ class Endpoint:
     model: str | None
     serial_number: str | None
     features: dict[str, Feature] = field(default_factory=dict)
+    # Who reports this endpoint to Alexa, as ``endpointReports[].reporter.namespace``
+    # sends it, in wire order: ``SKILL`` (a vendor cloud through a linked skill),
+    # ``AAA`` (registered with Amazon directly), ``ALEXABRIDGE``. A few endpoints
+    # have several reporters.
+    reporters: tuple[str, ...] = ()
 
     def feature(self, name: str, instance: str | None = None) -> Feature | None:
         """Look a feature up by name and instance."""
@@ -306,19 +311,6 @@ class Endpoint:
     def features_named(self, name: str) -> list[Feature]:
         """Every instance of a given feature type, e.g. all ``mode`` features."""
         return [f for f in self.features.values() if f.name == name]
-
-    @property
-    def is_on(self) -> bool | None:
-        """Power state, or ``None`` when the endpoint has no power feature.
-
-        Some endpoints genuinely have none -- the SmartDrape blind is the worked
-        example, and gating discovery on power is why every reference
-        implementation cannot see it (ref/06).
-        """
-        power = self.feature(FEATURE_POWER)
-        if power is None or power.value is None:
-            return None
-        return str(power.value).upper() == "ON"
 
     @property
     def reachable(self) -> bool | None:
@@ -364,28 +356,6 @@ class Endpoint:
             return cooling
         return min(heating[0], cooling[0]), max(heating[1], cooling[1])
 
-    def live_value(self, feature: Feature) -> Any:
-        """Current value, with the power-off sentinel filtered out.
-
-        When an endpoint's power is ``OFF``, its *writable* features report ``0``
-        -- which is not a member of ``modeOptions`` and sits below the range
-        minimum. It is an unknown sentinel, not a reading. Read-only features
-        keep reporting real values while off, so they are exempt (ref/07, ref/09).
-
-        The comparison is numeric, not textual: ``mode`` reports the sentinel as
-        the string ``"0"`` but ``range`` reports it as the float ``0.0``, and a
-        string test silently lets the latter through as a real reading.
-        Non-numeric values (``"OFF"`` on power and toggle) are never sentinels.
-        """
-        value = feature.value
-        if value is None or not feature.writable or self.is_on is not False:
-            return value
-        try:
-            is_sentinel = float(value) == 0
-        except (TypeError, ValueError):
-            is_sentinel = False
-        return None if is_sentinel else value
-
 
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
     """Build an :class:`Endpoint` from one item of the bulk endpoints query."""
@@ -395,21 +365,42 @@ def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
 
     features: dict[str, Feature] = {}
     for raw_feature in raw.get("features") or []:
+        # A feature Amazon nulled (a never-null field of it came back null) is
+        # skipped, so it cannot fail the poll of every other device.
+        if not isinstance(raw_feature, dict):
+            continue
         parsed = _parse_feature(raw_feature)
         if parsed is not None:
             features[parsed.key] = parsed
 
     return Endpoint(
         endpoint_id=endpoint_id,
-        friendly_name=raw.get("friendlyName") or endpoint_id,
+        friendly_name=_text(raw.get("friendlyNameObject")) or endpoint_id,
         display_category=_get(raw, "displayCategories", "primary", "value"),
-        # model / manufacturer arrive as {value:{text}} wrappers, though a bare
-        # string is tolerated so fixtures and older captures still parse.
+        # The name, model and manufacturer arrive as {value:{text}} wrappers, though
+        # a bare string is tolerated so fixtures and older captures still parse.
         manufacturer=_text(raw.get("manufacturer")),
         model=_text(raw.get("model")),
         serial_number=_text(raw.get("serialNumber")),
         features=features,
+        reporters=_reporters(raw.get("endpointReports")),
     )
+
+
+def _reporters(raw: Any) -> tuple[str, ...]:
+    """Each report's ``reporter.namespace``, in wire order, duplicates kept.
+
+    An entry without a namespace is skipped; a missing or null list gives none.
+    """
+    if not isinstance(raw, list):
+        return ()
+    namespaces = []
+    for report in raw:
+        reporter = report.get("reporter") if isinstance(report, dict) else None
+        namespace = reporter.get("namespace") if isinstance(reporter, dict) else None
+        if namespace is not None:
+            namespaces.append(str(namespace))
+    return tuple(namespaces)
 
 
 def _parse_feature(raw: dict[str, Any]) -> Feature | None:
@@ -417,7 +408,7 @@ def _parse_feature(raw: dict[str, Any]) -> Feature | None:
     if not name:
         return None
     operations = frozenset(
-        op["name"] for op in raw.get("operations") or [] if op.get("name")
+        op["name"] for op in raw.get("operations") or [] if isinstance(op, dict) and op.get("name")
     )
     return Feature(
         name=name,

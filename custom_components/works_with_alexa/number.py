@@ -36,7 +36,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
+from .entity import (
+    TEMPERATURE_UNITS,
+    UNRECORDED_WITH_VALUE,
+    WorksWithAlexaEntity,
+    selected_entities,
+)
 from .features import COLOR_BOUNDS, FIXED_RANGES, SET_COLOR, SET_TARGET_SETPOINT
 from .models import FEATURE_COLOR, Endpoint, Feature
 
@@ -120,6 +125,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
     """One writable range feature."""
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
     _wwa_operations = frozenset({"setRangeValue"})
 
     def __init__(
@@ -137,7 +143,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Current value, or None while the device reports the off sentinel."""
+        """Current value as Alexa reports it, even below the minimum while off."""
         return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:
@@ -153,12 +159,14 @@ class WorksWithAlexaFixedRangeNumber(WorksWithAlexaEntity, NumberEntity):
     """One writable value on Alexa's fixed scale: brightness, colour temperature,
     percentage or power level.
 
-    Written as ``{<property>: int}`` with the feature's set operation. The
-    payload keys follow the confirmed bare-property-name rule; none was yet
-    seen accepted live (2026-11-07).
+    Written as ``{<property>: int}`` with the feature's set operation, the
+    bare-property-name rule. Alexa accepted ``setBrightness`` and
+    ``setColorTemperature`` live (2026-11-08); ``setPercentage`` and
+    ``setPowerLevel`` follow Alexa's documentation and are not yet proven.
     """
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
 
     def __init__(
         self,
@@ -199,6 +207,7 @@ class WorksWithAlexaColorComponent(WorksWithAlexaEntity, NumberEntity):
     """
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
     _wwa_operations = frozenset({SET_COLOR})
 
     def __init__(
@@ -218,6 +227,12 @@ class WorksWithAlexaColorComponent(WorksWithAlexaEntity, NumberEntity):
     def _reported(self) -> Any:
         feature = self.feature
         return None if feature is None else feature.color_component(self._prop)
+
+    def _as_sent(self, feature: Feature) -> Any:
+        # The three components share one property. A dict is its known shape, so
+        # a component missing from it was not sent; any other shape is shown whole.
+        color = feature.properties.get("colorStateValue")
+        return None if isinstance(color, dict) else color
 
     @property
     def native_value(self) -> float | None:
@@ -248,6 +263,7 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
     """
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
     _wwa_operations = frozenset({SET_TARGET_SETPOINT})
     _attr_device_class = NumberDeviceClass.TEMPERATURE
 

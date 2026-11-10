@@ -60,14 +60,30 @@ mutation ActivateScene($input: ActivateAutomationInput!) {
 # conflict that would fail the whole document. `serialNumber { value { text } }`
 # is the spelling alexa-remote2 8.0.5 sends on this same `endpoints.items`
 # selection.
+#
+# `endpointReports { reporter { namespace } }` says who reports each endpoint to
+# Alexa: SKILL (a vendor cloud through a linked skill), AAA (registered with
+# Amazon directly) or ALEXABRIDGE. Spelled from the 2026-11-10 schema
+# introspection and validated live the same day in the document as it then
+# stood, with `friendlyName`. The reporter's `id` is never requested. It is a
+# never-null list, so a null from Amazon on one endpoint nulls every endpoint
+# of the reply; `api.async_get_endpoints` fails that poll rather than read it as
+# an empty account.
+#
+# `friendlyNameObject { value { text } }` is the device name. `Endpoint.friendlyName`
+# is deprecated ("Please use friendlyNameObject", schema introspection with
+# deprecated fields, 2026-11-10); both gave the same name on every endpoint, live,
+# the same day, in a separate read. This document, with `friendlyNameObject` and
+# `endpointReports` together, was proven live on 2026-11-10.
 ENDPOINTS_QUERY = """
 query Endpoints {
   endpoints(endpointsQueryParams: {paginationParams: {disablePagination: true}}) {
     items {
       id
-      friendlyName
+      friendlyNameObject { value { text } }
       displayCategories { primary { value } }
       enablement
+      endpointReports { reporter { namespace } }
       model { value { text } }
       manufacturer { value { text } }
       serialNumber { value { text } }

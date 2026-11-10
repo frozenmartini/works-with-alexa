@@ -23,7 +23,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
+from .entity import (
+    TEMPERATURE_UNITS,
+    UNRECORDED_WITH_VALUE,
+    WorksWithAlexaEntity,
+    selected_entities,
+)
 from .models import Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +56,8 @@ async def async_setup_entry(
 class WorksWithAlexaSensor(WorksWithAlexaEntity, SensorEntity):
     """One readable feature of one endpoint."""
 
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
+
     def __init__(
         self,
         coordinator: WorksWithAlexaCoordinator,
@@ -76,18 +83,19 @@ class WorksWithAlexaSensor(WorksWithAlexaEntity, SensorEntity):
 
     @property
     def native_value(self) -> Any:
-        """Current reading, with the power-off sentinel filtered out."""
+        """Current reading, as Alexa reports it."""
         return self.reading
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         base = super().extra_state_attributes
         feature = self.feature or self._source
-        attrs: dict[str, Any] = {"wwa_feature": base["wwa_feature"]}
+        # `reported_unit` goes second (the recorder keeps insertion order); every
+        # other attribute of the base passes through, so none is dropped here.
+        attrs: dict[str, Any] = {"wwa_feature": base.pop("wwa_feature")}
         # Only meaningful where the scale is undeclared; where it is declared the
         # unit is already on the entity itself.
         if feature.unit_of_measure and not feature.scale:
             attrs["reported_unit"] = feature.unit_of_measure
-        if "reachable" in base:
-            attrs["reachable"] = base["reachable"]
+        attrs.update(base)
         return attrs

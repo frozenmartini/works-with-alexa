@@ -127,7 +127,9 @@ class FixedRange(NamedTuple):
 # Writable values whose range is Alexa's fixed rule, never declared by the
 # device (Smart Home API, read 2026-11-07): whole numbers 0-100, colour
 # temperature 1,000-10,000 K. A device covering less goes to its nearest value.
-# The payload keys follow the confirmed rule but are not yet seen live.
+# The payload keys follow the confirmed rule; setBrightness and
+# setColorTemperature were accepted live (2026-11-08), setPercentage and
+# setPowerLevel are not yet proven.
 FIXED_RANGES = {
     FEATURE_BRIGHTNESS: FixedRange(0, 100, 1, "setBrightness", "brightness", "%"),
     FEATURE_COLOR_TEMPERATURE: FixedRange(
@@ -162,7 +164,7 @@ def sensor_features(endpoint: Endpoint) -> list[Feature]:
             not feature.writable
             or feature.name in _ALWAYS_SENSORS
         )
-        and endpoint.live_value(feature) is not None
+        and feature.value is not None
     ]
 
 

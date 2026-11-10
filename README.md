@@ -45,10 +45,23 @@ unselected, including on existing installations. Selected scenes appear as indiv
 under a single **Scenes** device card. Pressing a button activates its Alexa scene;
 it has no on/off state. Adding all devices does not select any scenes.
 
-Raw endpoint entities carry a `reachable` attribute (Alexa's own connectivity flag) when
-Alexa reports the device's connectivity. While a device's power reports off, a writable
-number or mode select that Alexa reports as `0` reads unknown rather than `0`. Thermostat
-setpoints, Thermostat Mode and the colour components always show what Alexa reports.
+Every value shows as Alexa reports it, whether the device is on or off. Some devices
+report `0` for every setting while off: a number then reads `0`, even below its minimum,
+and a mode select reads unknown because `0` is not one of its options. Holding a last
+value while a device is off is left to whatever consumes these entities. A switch is on
+for `ON`, off for `OFF`, and unknown for anything else.
+
+Raw endpoint entities also carry these attributes, each omitted when Alexa sends nothing
+for it:
+
+| Attribute | Meaning |
+|---|---|
+| `reachable` | Alexa's own connectivity flag. Not tied to availability, and not proof the device is live |
+| `alexa_value` | Alexa's last reported value for what the entity shows, before Home Assistant's mapping (a mode's `"0"`, a lock state Home Assistant has no name for). Never a pending write. Not recorded on numbers and sensors, where it repeats the state |
+| `alexa_reporters` | Who reports the device to Alexa, as Alexa sends it: `SKILL` (the maker's cloud, through a linked Alexa skill), `AAA` (registered with Amazon directly), `ALEXABRIDGE`. A list, since a few devices have several. Not recorded |
+
+A skill-linked device's values and reachability are what its maker's cloud last told
+Alexa: a device unplugged for a long time can keep reporting its last state.
 
 After setup, open the entry's **Options** (gear) in Settings → Devices & services →
 Works with Alexa. **Add, edit or remove devices** opens the device checkboxes,
@@ -204,12 +217,12 @@ thermostat feature has no assumed temperature role. Consumers should identify
 an entity through the HA registry and use `property` to distinguish thermostat
 children, rather than treating the feature key alone as an entity identifier.
 
-The dictionary merges with existing attributes such as `reachable`
-and `reported_unit`. It contains no credentials or raw account payloads. It does
+The dictionary merges with existing attributes such as `reachable`,
+`alexa_value`, `alexa_reporters` and `reported_unit`. It contains no credentials or raw account payloads. It does
 not change entity unique IDs, device grouping, select labels, numeric bounds,
 units, or commands. If an endpoint disappears, its entities become unavailable, and
 Home Assistant leaves out an unavailable entity's extra state attributes, so
-`wwa_feature` and `reachable` are absent from state until the endpoint returns.
+`wwa_feature` and the other attributes are absent from state until the endpoint returns.
 Check availability before writing.
 
 ## What is verified

@@ -220,7 +220,12 @@ class AmazonAlexaSession(SessionAuth):
     async def async_get_endpoints(self) -> dict[str, Endpoint]:
         """Fetch every endpoint with its live state, in one request."""
         data = await self._async_graphql(ENDPOINTS_QUERY, allow_null_fields=True)
-        items = (data.get("endpoints") or {}).get("items") or []
+        items = (data.get("endpoints") or {}).get("items")
+        if not isinstance(items, list):
+            # A never-null endpoint field left null (`id`, `endpointReports`) nulls
+            # that endpoint, and GraphQL then nulls the whole `[Endpoint!]` list:
+            # every endpoint is missing from this reply, not absent from the account.
+            raise ApiConnectionError("Alexa returned no endpoint list")
 
         endpoints: dict[str, Endpoint] = {}
         for item in items:
