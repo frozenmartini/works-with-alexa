@@ -5,6 +5,10 @@ value represents action status. Connectivity feeds the reachable attribute
 instead. ``features.raw_entities`` assigns writable controls to their own
 platforms, independent of manufacturer, and of device category except that a
 scene trigger yields nothing.
+
+A read-only ``mode`` shows Alexa's label for its value, as a select does, where
+Alexa sends one: a heated blanket's Status, say, which reports ``"1"`` while the
+Alexa app shows a word. An option Alexa sends no label for shows its raw value.
 """
 
 from __future__ import annotations
@@ -25,11 +29,12 @@ from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
 from .entity import (
     TEMPERATURE_UNITS,
+    UNRECORDED,
     UNRECORDED_WITH_VALUE,
     WorksWithAlexaEntity,
     selected_entities,
 )
-from .models import Endpoint, Feature
+from .models import FEATURE_MODE, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,12 +50,30 @@ async def async_setup_entry(
     # Shared with the device picker, so what the picker offers and what this
     # actually builds cannot drift apart.
     entities = [
-        WorksWithAlexaSensor(coordinator, endpoint, feature)
+        WorksWithAlexaModeSensor(coordinator, endpoint, feature)
+        if _mode_labels(feature)
+        else WorksWithAlexaSensor(coordinator, endpoint, feature)
         for endpoint, feature, _ in selected_entities(coordinator, "sensor")
     ]
 
     _LOGGER.debug("Adding %d sensors", len(entities))
     async_add_entities(entities)
+
+
+def _mode_labels(feature: Feature) -> dict[str, str]:
+    """A mode's labels by value, for the options Alexa actually labels.
+
+    ``ModeOption.friendly_name`` falls back to the value itself, so an option
+    whose label equals its value carries no label and is left out. The first of
+    any duplicate value wins, as in the select.
+    """
+    if feature.name != FEATURE_MODE:
+        return {}
+    labels: dict[str, str] = {}
+    for option in feature.mode_options:
+        if option.friendly_name != option.value:
+            labels.setdefault(option.value, option.friendly_name)
+    return labels
 
 
 class WorksWithAlexaSensor(WorksWithAlexaEntity, SensorEntity):
@@ -99,3 +122,43 @@ class WorksWithAlexaSensor(WorksWithAlexaEntity, SensorEntity):
             attrs["reported_unit"] = feature.unit_of_measure
         attrs.update(base)
         return attrs
+
+
+class WorksWithAlexaModeSensor(WorksWithAlexaSensor):
+    """A read-only mode, shown by Alexa's label for its value.
+
+    An enum when every option has a label, so a value outside the options reads
+    unknown, as in the select. Otherwise a labelled value shows its label and
+    any other its raw value. Either way the state is no longer Alexa's value, so
+    ``alexa_value`` is recorded, as it is for a select.
+    """
+
+    _unrecorded_attributes = UNRECORDED
+
+    def __init__(
+        self,
+        coordinator: WorksWithAlexaCoordinator,
+        endpoint: Endpoint,
+        feature: Feature,
+    ) -> None:
+        super().__init__(coordinator, endpoint, feature)
+        self._label_of = _mode_labels(feature)
+        # A label is text: never a measurement, even where the raw value is a number.
+        self._attr_state_class = None
+        values = [option.value for option in feature.mode_options]
+        self._enum = all(value in self._label_of for value in values)
+        if self._enum:
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = list(dict.fromkeys(self._label_of[value] for value in values))
+
+    @property
+    def native_value(self) -> Any:
+        """Alexa's label for the reading; unknown or raw when it has none."""
+        value = self.reading
+        if value is None:
+            return None
+        if (label := self._label_of.get(str(value))) is not None:
+            return label
+        # An enum's state must be one of its options; the value stays visible
+        # as ``alexa_value``.
+        return None if self._enum else value

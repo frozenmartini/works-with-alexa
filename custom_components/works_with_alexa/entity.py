@@ -50,8 +50,9 @@ ATTR_ALEXA_VALUE = "alexa_value"
 ATTR_ALEXA_REPORTERS = "alexa_reporters"
 
 # The reporters do not change between polls, so no entity records them. Where
-# the state already is Alexa's value (numbers and sensors), its copy is not
-# recorded either; elsewhere it is the value Home Assistant could not show.
+# the state already is Alexa's value (numbers and sensors, except a read-only
+# mode shown by its label), its copy is not recorded either; elsewhere it is the
+# value Home Assistant could not show.
 UNRECORDED = frozenset({ATTR_ALEXA_REPORTERS})
 UNRECORDED_WITH_VALUE = UNRECORDED | {ATTR_ALEXA_VALUE}
 

@@ -27,7 +27,7 @@ One entity per Alexa feature, for the devices you pick on the integration's opti
 | `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Bounds are Alexa's allowed range when the device sends one, otherwise 40–120 °F step 1, 5–50 °C step 0.1, 278–323 K step 0.1 |
 | `lock` | `lock` | Locked / unlocked / jammed |
 | `motionSensor` | `binary_sensor` | Motion: on when Alexa reports DETECTED, read at each poll |
-| anything else read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING; a speaker's volume, a light sensor's reading (no unit, since Alexa gives none), a security panel's arm state and its siren state |
+| anything else read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING; a speaker's volume, a light sensor's reading (no unit, since Alexa gives none), a security panel's arm state and its siren state. A read-only `mode` shows Alexa's label for its value where Alexa sends one, otherwise the raw value |
 
 Nothing is assembled here: whole devices (a fan from a power switch, a speed select and a
 direction select, say) are built from these entities by the companion Kitbash integration.
@@ -57,7 +57,7 @@ for it:
 | Attribute | Meaning |
 |---|---|
 | `reachable` | Alexa's own connectivity flag. Not tied to availability, and not proof the device is live |
-| `alexa_value` | Alexa's last reported value for what the entity shows, before Home Assistant's mapping (a mode's `"0"`, a lock state Home Assistant has no name for). Never a pending write. Not recorded on numbers and sensors, where it repeats the state |
+| `alexa_value` | Alexa's last reported value for what the entity shows, before Home Assistant's mapping (a mode's `"0"`, a lock state Home Assistant has no name for). Never a pending write. Not recorded on numbers and sensors, where it repeats the state (a read-only mode shown by its label records it) |
 | `alexa_reporters` | Who reports the device to Alexa, as Alexa sends it: `SKILL` (the maker's cloud, through a linked Alexa skill), `AAA` (registered with Amazon directly), `ALEXABRIDGE`. A list, since a few devices have several. Not recorded |
 
 A skill-linked device's values and reachability are what its maker's cloud last told
