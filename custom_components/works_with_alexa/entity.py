@@ -292,6 +292,9 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         A command that fails rolls the assumption back, so a write that never
         happened still cannot leave a lie on screen.
 
+        After success, an immediate refresh and a follow-up one (see the
+        coordinator), for what Alexa updates a few seconds after the command.
+
         Capability classification happens centrally in features.py; each platform
         exposes only the commands it supports.
         """
@@ -322,4 +325,5 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
                 f"{operation} failed on {self._source.key}: {err}"
             ) from err
 
+        self.coordinator.async_schedule_follow_up()
         await self.coordinator.async_request_refresh()

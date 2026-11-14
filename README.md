@@ -159,7 +159,10 @@ development logs.
 
 One account-wide endpoint query plus paginated scene discovery runs per polling
 interval (default 60 seconds, minimum 15 seconds). A successful command, and opening
-the device options, also request an immediate refresh.
+the device options, also request an immediate refresh. A successful command also
+requests one more 15 seconds after the last command, since Alexa can update other
+values of the device a few seconds after acknowledging it; not when the polling
+interval is 15 seconds.
 
 ## Optional discovery contract
 

@@ -8,16 +8,23 @@ body (ref/00 §6).
 
 Third-party scene discovery is a separate paginated query on each poll. Its
 transient failures make scene buttons unavailable without stopping device polls.
+
+A successful command is followed by an immediate refresh and, unless the polling
+interval is short enough to catch up anyway, one more ``FOLLOW_UP_DELAY`` after
+the last command: Alexa can update other properties of the device a few seconds
+after acknowledging a command, once the immediate refresh has already read them.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AmazonAlexaSession
@@ -35,6 +42,12 @@ from .scenes import AlexaScene
 from .protocol import AuthError, WorksWithAlexaError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Seconds from the last successful command to the follow-up refresh. Seen live
+# on a heated blanket: after power off, a setting changed on Alexa's side after
+# the immediate refresh and showed only at the next poll, 63 s later. A choice,
+# not a measurement: long enough for such a delayed update, short of a 60 s poll.
+FOLLOW_UP_DELAY = 15.0
 
 
 class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
@@ -59,6 +72,10 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
         self.scenes: dict[str, AlexaScene] = {}
         # None until the first scene discovery, so its first failure is logged.
         self.scenes_available: bool | None = None
+        # One follow-up refresh for the whole account, however many entities
+        # were driven; each command restarts it.
+        self._cancel_follow_up: Callable[[], None] | None = None
+        self._follow_ups_stopped = False
 
     @property
     def selected_scenes(self) -> dict[str, AlexaScene]:
@@ -84,6 +101,39 @@ class WorksWithAlexaCoordinator(DataUpdateCoordinator[dict[str, Endpoint]]):
             for endpoint_id, endpoint in self.data.items()
             if endpoint_id in allowed
         }
+
+    @callback
+    def async_schedule_follow_up(self) -> None:
+        """Refresh once more ``FOLLOW_UP_DELAY`` after the last command.
+
+        Not when the regular poll comes as soon (the interval's minimum is 15 s),
+        and never after shutdown: a command still in flight at unload must not
+        arm a timer that nothing would cancel.
+        """
+        if self._follow_ups_stopped:
+            return
+        if self.update_interval is not None and self.update_interval.total_seconds() <= FOLLOW_UP_DELAY:
+            return
+        self._cancel_follow_up_timer()
+        self._cancel_follow_up = async_call_later(self.hass, FOLLOW_UP_DELAY, self._async_follow_up)
+
+    async def _async_follow_up(self, _now: datetime) -> None:
+        self._cancel_follow_up = None
+        event(_LOGGER, "poll.follow_up")
+        # Through the debouncer, so it merges with any refresh already requested.
+        await self.async_request_refresh()
+
+    @callback
+    def _cancel_follow_up_timer(self) -> None:
+        if self._cancel_follow_up is not None:
+            self._cancel_follow_up()
+            self._cancel_follow_up = None
+
+    async def async_shutdown(self) -> None:
+        """Cancel the follow-up refresh too; Home Assistant calls this on unload."""
+        self._follow_ups_stopped = True
+        self._cancel_follow_up_timer()
+        await super().async_shutdown()
 
     async def _async_update_data(self) -> dict[str, Endpoint]:
         """Fetch every endpoint, keyed by endpoint id."""
