@@ -1,6 +1,16 @@
-# Works with Alexa
+<center>
 
-[![Installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.works_with_alexa.total&label=installs&logo=home-assistant&color=41BDF5)](https://analytics.home-assistant.io/)
+<p align="center">
+<img src="https://raw.githubusercontent.com/frozenmartini/works-with-alexa/main/custom_components/works_with_alexa/brand/icon.png" alt="Works with Alexa icon" width="150" height="150">
+</p>
+
+<h1 align="center">Works with Alexa</h1>
+
+<p align="center">
+  <a href="https://analytics.home-assistant.io/"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.works_with_alexa.total&label=installs&logo=home-assistant&color=41BDF5" alt="Installs"></a>
+</p>
+
+</center>
 
 A Home Assistant custom integration for devices that only exist in Alexa: things with no
 native Home Assistant integration, reachable only through Amazon's **unofficial** Alexa
@@ -90,8 +100,15 @@ Sign in directly on Amazon in your own browser:
 1. Choose your Amazon marketplace in Home Assistant.
 2. Open the Amazon sign-in link in a separate browser tab and complete sign-in
    and any verification there. Passwords and verification codes stay on Amazon.
-3. Copy the full `/ap/maplanding` redirect URL into Home Assistant and submit.
-   A blank or error page at that address is expected.
+3. Amazon then shows a page that says **"SORRY, we couldn't find that page"**, with a dog.
+   **That is correct, not an error: sign-in worked.** The page's address carries the
+   code Home Assistant needs. Tap or click the address bar to show the full address
+   (it starts with `https://www.amazon.<domain>/ap/maplanding`), copy all of it, paste it
+   into Home Assistant and submit. Some browsers show a blank page instead; that is
+   correct too.
+
+   <img src="https://raw.githubusercontent.com/frozenmartini/works-with-alexa/main/docs/images/signin_landing_page_copy_address.jpg" alt="Amazon's SORRY page with a dog after sign-in, with the address bar outlined in red: copy this address" width="250">
+
 4. After your account is verified, choose devices individually, add all of them,
    or add none for now; then choose scenes, if the account has any.
 
@@ -277,3 +294,12 @@ site — the platforms, the device picker and the tests all read them.
 
 The test suite is maintained alongside this repository rather than inside it, and runs against
 fixtures captured from a live account. It is not distributed with the integration.
+
+## Acknowledgements
+
+Thank you to [superbeetle1973](https://github.com/superbeetle1973) and
+[alexapy-secure](https://github.com/superbeetle1973/alexapy-secure), a fork of
+[alexapy](https://gitlab.com/keatontaylor/alexapy) that signs in without storing a password.
+Its way of signing in, on Amazon's own page and then pasting back the address Amazon lands
+on, is the sign-in this integration uses. works_with_alexa doesn't depend on either library;
+it implements the sign-in itself.
