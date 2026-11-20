@@ -17,9 +17,15 @@ DOMAIN: Final = "works_with_alexa"
 DEVICE_TYPE: Final = "A2IVLV5VM2W81"
 APP_NAME: Final = "Amazon Alexa"
 APP_VERSION: Final = "2.2.556530.0"
+# Sent to Amazon's token and cookie exchanges (api.amazon.com, www.amazon.com).
 USER_AGENT: Final = (
     "AmazonWebView/AmazonAlexa/2.2.663733.0/iOS/18.5/iPhone"
 )
+# Sent to every alexa.<domain> request: the API and the CSRF pages. Since
+# 2026-11 Amazon's edge refuses older app agents on the GraphQL endpoint with a
+# 403 HTML page. This is the Alexa app's own agent, as alexa-remote and openHAB's
+# amazonechocontrol send it.
+API_USER_AGENT: Final = "AppleWebKit PitanguiBridge/2.2.595606.0"
 
 # --- Endpoints ------------------------------------------------------------------
 # Domain must stay consistent with the domain the cookies were issued for, or

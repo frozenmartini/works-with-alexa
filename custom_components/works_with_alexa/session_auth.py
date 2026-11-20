@@ -31,6 +31,7 @@ from yarl import URL
 
 from .auth_watch import TERMINAL_CODES, auth_event, error_code, fingerprint, redacted_exchange
 from .const import (
+    API_USER_AGENT,
     APP_NAME,
     APP_VERSION,
     COOKIE_EXCHANGE_PATH,
@@ -143,7 +144,7 @@ class SessionAuth:
 
     def headers(self) -> dict[str, str]:
         headers = {
-            "User-Agent": USER_AGENT,
+            "User-Agent": API_USER_AGENT,
             "Accept": "application/json",
             "Accept-Language": "en-US",
             "Content-Type": "application/json; charset=utf-8",

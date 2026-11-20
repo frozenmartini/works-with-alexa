@@ -95,6 +95,7 @@ class AmazonAlexaSession(SessionAuth):
             ) as response:
                 body = await response.text()
                 status = response.status
+                content_type = response.content_type
         except (aiohttp.ClientError, TimeoutError) as err:
             event(_LOGGER, "http.failed", level=logging.ERROR, method=method, path=path, http_id=http_id,
                   error_type=type(err).__name__, elapsed_ms=round((session_auth.monotonic() - started) * 1000, 3))
@@ -104,6 +105,16 @@ class AmazonAlexaSession(SessionAuth):
               retry=_retried, elapsed_ms=round((session_auth.monotonic() - started) * 1000, 3))
         # Retired during the read: no forced recovery, no retry, no result.
         self.check_active()
+
+        if status in (401, 403) and content_type == "text/html":
+            # An HTML page, not Amazon's API answer: its edge refused the
+            # request itself (in 2026-11, for a blocked User-Agent). That says
+            # nothing about the sign-in, which the token and cookie exchanges
+            # judge on their own. So no forced recovery and no new sign-in:
+            # this request fails, and the next poll tries again.
+            self.emit("api.edge_refused", level=logging.WARNING, status=status, path=path,
+                      root_token_rejected=False, new_login_required=False)
+            raise ApiConnectionError(f"Amazon's edge refused {path} with HTTP {status}")
 
         if status in (401, 403):
             if _retried:
