@@ -201,16 +201,19 @@ For example, an oscillation-angle number can publish:
 }
 ```
 
-Hints include `power`, `brightness`, `color_temperature`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
-`mode`, `temperature`, `setpoint`, `heating`, `cooling`, `lock`, `contact`, `light`,
-and `cover`. Manufacturer, model, device name/category, numeric instances and
+Hints include `power`, `brightness`, `color_temperature`, `hue`, `saturation`,
+`speed`, `oscillate`, `oscillation_angle`, `direction`, `mode`, `temperature`,
+`setpoint`, `heating`, `cooling`, `lock`, `contact`, `motion`, `light`, and
+`cover`. A colour's brightness (0–1) carries no role, so it is never taken for
+the `brightness` feature (0–100). Manufacturer, model, device name/category, numeric instances and
 select option labels do not determine roles. An ordered mode alone does not
 establish speed, and an unordered mode is not a speed scale. A range measuring
 oscillation angle is distinct from an oscillation on/off toggle.
 
 Thermostat children share their parent's feature `key` and `label`, with
-`property` distinguishing them. Setpoint numbers carry `role: "setpoint"` and the
-Thermostat Mode select carries `role: "mode"`. Temperature sensors are separate
+`property` distinguishing them. The target setpoint carries `role: "setpoint"`,
+the lower setpoint `role: "heating"` and the upper setpoint `role: "cooling"`;
+the Thermostat Mode select carries `role: "mode"`. Temperature sensors are separate
 `temperatureSensor` features, not thermostat children, and carry
 `role: "temperature"`. A whole read-only
 thermostat feature has no assumed temperature role. Consumers should identify

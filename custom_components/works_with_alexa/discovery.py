@@ -27,19 +27,31 @@ _LABEL_ROLES = {
 }
 
 
+# A dual-setpoint thermostat's lower setpoint is its heating threshold and its
+# upper one its cooling threshold.
+_SETPOINT_ROLES = {
+    "targetSetpoint": "setpoint", "lowerSetpoint": "heating", "upperSetpoint": "cooling",
+}
+# A colour's hue and saturation. Its brightness (0-1) is left untagged, so it is
+# never taken for the brightness feature (0-100).
+_COLOR_ROLES = {"hue": "hue", "saturation": "saturation"}
+
+
 def _role(feature: Feature, prop: str | None) -> str | None:
     if feature.name == "thermostat":
         if prop in SETPOINT_PROPERTIES:
-            return "setpoint"
+            return _SETPOINT_ROLES[prop]
         if prop == THERMOSTAT_MODE_PROPERTY:
             return "mode"
         # A whole read-only thermostat feature may primarily report a setpoint.
         # Do not describe that value as the current temperature.
         return None
+    if feature.name == "color":
+        return _COLOR_ROLES.get(prop)
     capability_role = {
         "power": "power", "lock": "lock", "temperatureSensor": "temperature",
         "contactSensor": "contact", "brightness": "brightness",
-        "colorTemperature": "color_temperature",
+        "colorTemperature": "color_temperature", "motionSensor": "motion",
     }.get(feature.name)
     if capability_role:
         return capability_role
