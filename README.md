@@ -201,7 +201,7 @@ For example, an oscillation-angle number can publish:
 }
 ```
 
-Hints include `power`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
+Hints include `power`, `brightness`, `color_temperature`, `speed`, `oscillate`, `oscillation_angle`, `direction`,
 `mode`, `temperature`, `setpoint`, `heating`, `cooling`, `lock`, `contact`, `light`,
 and `cover`. Manufacturer, model, device name/category, numeric instances and
 select option labels do not determine roles. An ordered mode alone does not
