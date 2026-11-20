@@ -1,5 +1,7 @@
 # Works with Alexa
 
+[![Installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.works_with_alexa.total&label=installs&logo=home-assistant&color=41BDF5)](https://analytics.home-assistant.io/)
+
 A Home Assistant custom integration for devices that only exist in Alexa: things with no
 native Home Assistant integration, reachable only through Amazon's **unofficial** Alexa
 account API (the one the Alexa app uses, not the official Smart Home Skill API).
@@ -245,14 +247,22 @@ Check availability before writing.
 
 ## Install
 
-**HACS** — open HACS, search for **Works with Alexa**, download it and restart Home Assistant.
-(If it does not appear, add this repository in HACS under ⋮ → Custom repositories, type
-*Integration*.)
+[![Open your Home Assistant instance and open this repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=frozenmartini&repository=works-with-alexa&category=integration)
 
-**Manually** — copy `custom_components/works_with_alexa/` into `<config>/custom_components/`
+**Marketplace (Home Assistant 2026.11 or newer)**: select the button above, or open Settings →
+Marketplace and search for **Works with Alexa**. Select **Install**, then restart Home Assistant.
+If it doesn't appear, go to ⋮ → **Custom repositories**, paste
+`https://github.com/frozenmartini/works-with-alexa` and choose type *Integration*. Adding a
+repository asks you to connect GitHub first.
+
+**HACS (Home Assistant before 2026.11)**: open HACS, search for **Works with Alexa**, download it
+and restart Home Assistant. If it doesn't appear, add this repository in HACS under
+⋮ → Custom repositories, type *Integration*.
+
+**Manually**: copy `custom_components/works_with_alexa/` into `<config>/custom_components/`
 and restart Home Assistant.
 
-Either way, finish in Settings → Devices & services → Add integration → **Works with Alexa**.
+Whichever route you take, finish in Settings → Devices & services → Add integration → **Works with Alexa**.
 
 Requires Home Assistant **2026.3.0 or newer**, including support for the bundled
 integration icon. No Python requirements beyond Home Assistant itself.
