@@ -22,6 +22,8 @@ from .entity import WorksWithAlexaEntity, selected_entities
 
 _LOGGER = logging.getLogger(__name__)
 
+_SWITCH_STATES = {"ON": True, "OFF": False}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -46,10 +48,9 @@ class WorksWithAlexaSwitch(WorksWithAlexaEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
+        """``ON`` is on and ``OFF`` is off; any other value Alexa sends is unknown."""
         value = self.reading
-        if value is None:
-            return None
-        return str(value).upper() == "ON"
+        return None if value is None else _SWITCH_STATES.get(str(value).upper())
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.async_control("turnOn", {}, assume="ON")

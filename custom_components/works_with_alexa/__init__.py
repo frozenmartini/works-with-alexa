@@ -32,7 +32,7 @@ from .const import (
 )
 from .coordinator import WorksWithAlexaCoordinator
 from .dev_logging import async_enable_evidence_logging, event
-from .features import writable_feature_keys
+from .features import READ_ONLY_PLATFORMS, writable_feature_keys
 from .identity import account_id, is_email
 from .protocol import AuthError, WorksWithAlexaError
 from .scenes import scene_unique_id, scenes_device_id
@@ -40,6 +40,7 @@ from .scenes import scene_unique_id, scenes_device_id
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.LOCK,
     Platform.NUMBER,
@@ -204,8 +205,8 @@ def _purge_registry(
         for key in writable_feature_keys(endpoint)
     }
     for entity in er.async_entries_for_config_entry(entities, entry.entry_id):
-        if entity.domain == "sensor" and entity.unique_id in replaced:
-            event(_LOGGER, "entity.reclassified", old_platform="sensor")
+        if entity.domain in READ_ONLY_PLATFORMS and entity.unique_id in replaced:
+            event(_LOGGER, "entity.reclassified", old_platform=entity.domain)
             entities.async_remove(entity.entity_id)
 
 

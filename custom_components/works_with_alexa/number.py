@@ -6,13 +6,10 @@ discriminator, ref/07), the Dreo fans' speed ranges, the SmartDrape's "Opening"
 0..100 Percent. The bounds come from the device's own supportedRange, never from
 a constant -- they are device-specific.
 
-A writable ``brightness`` feature becomes a number too. It is the one exception
-to device bounds: Alexa sends no configuration for it, and its 0..100 is fixed by
-the API.
-
-A writable ``colorTemperature`` feature becomes a number in kelvin. Alexa reports
-no bounds for it either, so these are the Smart Home API's; the device rejects or
-falls back from what it cannot do.
+Brightness, colour temperature, percentage and power level become numbers
+with Alexa's fixed bounds (``features.FIXED_RANGES``): the device declares none.
+A colour becomes three numbers, hue, saturation and brightness, written
+together.
 
 A thermostat's setpoints become numbers too, one per setpoint the device
 reports (target, lower, upper), so the companion integration kitbash can
@@ -23,6 +20,8 @@ an ecobee on 2026-10-21.
 from __future__ import annotations
 
 import logging
+import math
+from decimal import Decimal
 from typing import Any
 
 from homeassistant.components.number import (
@@ -30,25 +29,32 @@ from homeassistant.components.number import (
     NumberEntity,
     NumberMode,
 )
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import WorksWithAlexaConfigEntry
 from .coordinator import WorksWithAlexaCoordinator
-from .entity import TEMPERATURE_UNITS, WorksWithAlexaEntity, selected_entities
-from .features import SET_BRIGHTNESS, SET_COLOR_TEMPERATURE, SET_TARGET_SETPOINT
-from .models import FEATURE_BRIGHTNESS, FEATURE_COLOR_TEMPERATURE, Endpoint, Feature
+from .entity import (
+    TEMPERATURE_UNITS,
+    UNRECORDED_WITH_VALUE,
+    WorksWithAlexaEntity,
+    selected_entities,
+)
+from .features import COLOR_BOUNDS, FIXED_RANGES, SET_COLOR, SET_TARGET_SETPOINT
+from .models import FEATURE_COLOR, Endpoint, Feature
 
 _LOGGER = logging.getLogger(__name__)
 
-# Alexa reports no bounds for a setpoint (the schema has an allowed-range
-# property, but the ecobee does not send it), so these bound the slider, not
-# the device. Widest sane values per scale; the device rejects what it cannot do.
+# A setpoint's bounds are Alexa's allowed range when the device sends one
+# (`Endpoint.setpoint_bounds`), else this fallback; the step is always from
+# here. Wide enough for frost protection and a hot shower; the device rejects
+# what it cannot do.
 _SETPOINT_BOUNDS = {
-    UnitOfTemperature.FAHRENHEIT: (40.0, 100.0, 1.0),
-    UnitOfTemperature.CELSIUS: (5.0, 38.0, 0.5),
-    UnitOfTemperature.KELVIN: (278.0, 311.0, 0.5),
+    UnitOfTemperature.FAHRENHEIT: (40.0, 120.0, 1.0),
+    UnitOfTemperature.CELSIUS: (5.0, 50.0, 0.1),
+    UnitOfTemperature.KELVIN: (278.0, 323.0, 0.1),
 }
 
 # A range setpoint travels as a pair on the wire (Smart Home API
@@ -66,6 +72,19 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _on_steps(low: float, high: float, step: float) -> tuple[float, float] | None:
+    """A range moved inward onto the step grid, or ``None`` if no step fits.
+
+    A range converted between scales comes out off the grid and with float
+    noise (45 degF is 7.2222 degC); rounding inward keeps every offered value
+    inside what Alexa allows.
+    """
+    digits = max(0, -Decimal(str(step)).as_tuple().exponent)
+    low = round(math.ceil(round(low / step, 6)) * step, digits)
+    high = round(math.floor(round(high / step, 6)) * step, digits)
+    return (low, high) if low <= high else None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: WorksWithAlexaConfigEntry,
@@ -78,11 +97,16 @@ async def async_setup_entry(
     # other's pending value.
     entities: list[NumberEntity] = []
     setpoints: dict[tuple[str, str], WorksWithAlexaSetpoint] = {}
+    colors: dict[str, dict[str, WorksWithAlexaColorComponent]] = {}
     for endpoint, feature, prop in selected_entities(coordinator, "number"):
-        if feature.name == FEATURE_BRIGHTNESS:
-            entities.append(WorksWithAlexaBrightness(coordinator, endpoint, feature))
-        elif feature.name == FEATURE_COLOR_TEMPERATURE:
-            entities.append(WorksWithAlexaColorTemperature(coordinator, endpoint, feature))
+        if feature.name in FIXED_RANGES:
+            entities.append(WorksWithAlexaFixedRangeNumber(coordinator, endpoint, feature))
+        elif feature.name == FEATURE_COLOR:
+            component = WorksWithAlexaColorComponent(coordinator, endpoint, feature, prop)
+            # One dict per endpoint, shared by its three components.
+            component.components = colors.setdefault(endpoint.endpoint_id, {})
+            component.components[prop] = component
+            entities.append(component)
         elif prop is None:
             entities.append(WorksWithAlexaNumber(coordinator, endpoint, feature))
         else:
@@ -101,6 +125,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
     """One writable range feature."""
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
     _wwa_operations = frozenset({"setRangeValue"})
 
     def __init__(
@@ -118,7 +143,7 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Current value, or None while the device reports the off sentinel."""
+        """Current value as Alexa reports it, even below the minimum while off."""
         return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:
@@ -130,57 +155,100 @@ class WorksWithAlexaNumber(WorksWithAlexaEntity, NumberEntity):
         )
 
 
-class WorksWithAlexaBrightness(WorksWithAlexaEntity, NumberEntity):
-    """An endpoint's brightness, as a percentage.
+class WorksWithAlexaFixedRangeNumber(WorksWithAlexaEntity, NumberEntity):
+    """One writable value on Alexa's fixed scale: brightness, colour temperature,
+    percentage or power level.
 
-    Amazon rejects values outside 0..100 with INVALID_VALUE. The ``{"brightness":
-    45}`` payload is what public clients of this API send, captured from the Alexa
-    web UI. Like a range, it reads unknown while the device reports the off sentinel.
-    """
-
-    _attr_mode = NumberMode.SLIDER
-    _attr_native_min_value = 0
-    _attr_native_max_value = 100
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _wwa_operations = frozenset({SET_BRIGHTNESS})
-
-    @property
-    def native_value(self) -> float | None:
-        """Current level, or None while the device reports the off sentinel."""
-        return _float_or_none(self.reading)
-
-    async def async_set_native_value(self, value: float) -> None:
-        level = round(value)
-        await self.async_control(SET_BRIGHTNESS, {"brightness": level}, assume=level)
-
-
-class WorksWithAlexaColorTemperature(WorksWithAlexaEntity, NumberEntity):
-    """An endpoint's color temperature, in kelvin.
-
-    Deliberately no device class: it would offer unit conversion, and this is a
-    color, not a temperature reading. The ``{"colorTemperatureInKelvin": 3000}``
-    payload is what public clients of this API send. A value the device falls back
-    from shows what it really kept once the 30 second assumption expires.
+    Written as ``{<property>: int}`` with the feature's set operation, the
+    bare-property-name rule. Alexa accepted ``setBrightness`` and
+    ``setColorTemperature`` live (2026-11-08); ``setPercentage`` and
+    ``setPowerLevel`` follow Alexa's documentation and are not yet proven.
     """
 
     _attr_mode = NumberMode.BOX
-    _attr_native_min_value = 1000
-    _attr_native_max_value = 10000
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = "K"
-    _wwa_operations = frozenset({SET_COLOR_TEMPERATURE})
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
+
+    def __init__(
+        self,
+        coordinator: WorksWithAlexaCoordinator,
+        endpoint: Endpoint,
+        feature: Feature,
+    ) -> None:
+        super().__init__(coordinator, endpoint, feature)
+        self._fixed = FIXED_RANGES[feature.name]
+        self._wwa_operations = frozenset({self._fixed.operation})
+        self._attr_native_min_value = self._fixed.minimum
+        self._attr_native_max_value = self._fixed.maximum
+        self._attr_native_step = self._fixed.step
+        self._attr_native_unit_of_measurement = self._fixed.unit
 
     @property
     def native_value(self) -> float | None:
-        """Current kelvin, or None while the device reports the off sentinel."""
         return _float_or_none(self.reading)
 
     async def async_set_native_value(self, value: float) -> None:
-        kelvin = round(value)
+        payload = round(value)
         await self.async_control(
-            SET_COLOR_TEMPERATURE, {"colorTemperatureInKelvin": kelvin}, assume=kelvin
+            self._fixed.operation, {self._fixed.payload_key: payload}, assume=payload
         )
+
+
+class WorksWithAlexaColorComponent(WorksWithAlexaEntity, NumberEntity):
+    """One component of a colour feature: hue, saturation or brightness, raw.
+
+    ``setColor`` takes all three at once as ``{"color": {hue, saturation,
+    brightness}}``, so a write sends the other two components' values as their
+    own entities read them: an unconfirmed write to one is sent, not the polled
+    value it replaced. Like a setpoint, a component shows what Alexa reports
+    even while the device is off: a bulb that is off keeps reporting its last
+    colour (2026-11-07). Alexa accepted this payload live (2026-11-08), and a
+    hue or saturation write reads back; a bulb may go on reporting a colour
+    brightness of 1.0 after accepting another, and the entity shows that.
+    """
+
+    _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
+    _wwa_operations = frozenset({SET_COLOR})
+
+    def __init__(
+        self,
+        coordinator: WorksWithAlexaCoordinator,
+        endpoint: Endpoint,
+        feature: Feature,
+        prop: str,
+    ) -> None:
+        super().__init__(coordinator, endpoint, feature, prop)
+        low, high, step = COLOR_BOUNDS[prop]
+        self._attr_native_min_value = low
+        self._attr_native_max_value = high
+        self._attr_native_step = step
+        self.components: dict[str, WorksWithAlexaColorComponent] = {prop: self}
+
+    def _reported(self) -> Any:
+        feature = self.feature
+        return None if feature is None else feature.color_component(self._prop)
+
+    def _as_sent(self, feature: Feature) -> Any:
+        # The three components share one property. A dict is its known shape, so
+        # a component missing from it was not sent; any other shape is shown whole.
+        color = feature.properties.get("colorStateValue")
+        return None if isinstance(color, dict) else color
+
+    @property
+    def native_value(self) -> float | None:
+        return _float_or_none(self.reading)
+
+    async def async_set_native_value(self, value: float) -> None:
+        color: dict[str, float] = {}
+        for name, component in self.components.items():
+            current = value if component is self else component.native_value
+            if current is None:
+                # Sending a guess would change the light; refuse instead.
+                raise HomeAssistantError(
+                    f"{SET_COLOR} needs the colour's {name}, which Alexa has not reported"
+                )
+            color[name] = current
+        await self.async_control(SET_COLOR, {"color": color}, assume=value)
 
 
 class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
@@ -195,6 +263,7 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
     """
 
     _attr_mode = NumberMode.BOX
+    _unrecorded_attributes = UNRECORDED_WITH_VALUE
     _wwa_operations = frozenset({SET_TARGET_SETPOINT})
     _attr_device_class = NumberDeviceClass.TEMPERATURE
 
@@ -210,6 +279,8 @@ class WorksWithAlexaSetpoint(WorksWithAlexaEntity, NumberEntity):
         unit = TEMPERATURE_UNITS.get(self._scale, UnitOfTemperature.CELSIUS)
         self._attr_native_unit_of_measurement = unit
         low, high, step = _SETPOINT_BOUNDS.get(unit, _SETPOINT_BOUNDS[UnitOfTemperature.CELSIUS])
+        if (alexa := endpoint.setpoint_bounds(feature, prop)) is not None:
+            low, high = _on_steps(*alexa, step) or (low, high)
         self._attr_native_min_value = low
         self._attr_native_max_value = high
         self._attr_native_step = step

@@ -18,7 +18,7 @@ DEVICE_TYPE: Final = "A2IVLV5VM2W81"
 APP_NAME: Final = "Amazon Alexa"
 APP_VERSION: Final = "2.2.556530.0"
 USER_AGENT: Final = (
-    "AmazonWebView/Amazon Alexa/2.2.556530.0/iOS/16.6/iPhone"
+    "AmazonWebView/AmazonAlexa/2.2.663733.0/iOS/18.5/iPhone"
 )
 
 # --- Endpoints ------------------------------------------------------------------

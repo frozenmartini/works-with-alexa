@@ -21,8 +21,11 @@ from .auth_watch import auth_event, redacted_exchange
 from .const import APP_NAME, APP_VERSION, DEVICE_TYPE, MARKETPLACES
 from .protocol import ApiConnectionError, AuthError, extract_tokens, parse_json, raise_for_throttle
 
-# alexapy-secure's working form: the .com handle on every marketplace and the
-# offline_access scope.
+# alexapy-secure's form for amazon.com: /ap/register with the bare handle and
+# the offline_access scope. Other marketplaces reject that link with an error
+# page before any form (issue #1, amazon.fr and amazon.it); they sign in on
+# /ap/signin with the handle suffixed by the TLD's last segment, as
+# alexa-cookie does for a non-.com base page. See _signin_path_and_handle.
 _HANDLE = "amzn_dp_project_dee_ios"
 _SCOPE = "device_auth_access offline_access"
 # The already-hex device-type suffix, hex-encoded once more below.
@@ -41,6 +44,20 @@ _MAP_MD = base64.b64encode(json.dumps({
 def _b64url(data: bytes) -> str:
     """URL-safe base64 without padding, as OAuth PKCE expects."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _signin_path_and_handle(domain: str) -> tuple[str, str]:
+    """The sign-in path and ``assoc_handle`` / ``pageId`` for a marketplace.
+
+    amazon.com keeps alexapy-secure's /ap/register with the bare handle. Any
+    other marketplace gets /ap/signin and the handle suffixed by the last
+    segment of its domain: amazon.it -> ..._it, amazon.co.uk -> ..._uk,
+    amazon.com.au -> ..._au. Verified live on amazon.it only.
+    """
+    last = domain.rsplit(".", 1)[-1].lower()
+    if last == "com":
+        return "/ap/register", _HANDLE
+    return "/ap/signin", f"{_HANDLE}_{last}"
 
 
 class InvalidRedirect(ValueError):
@@ -72,10 +89,11 @@ class DirectEnrollment:
 
     @property
     def login_url(self) -> str:
+        path, handle = _signin_path_and_handle(self.domain)
         query = {
             "openid.return_to": f"https://www.{self.domain}/ap/maplanding",
-            "openid.assoc_handle": _HANDLE,
-            "pageId": _HANDLE,
+            "openid.assoc_handle": handle,
+            "pageId": handle,
             "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
             "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
             "openid.mode": "checkid_setup",
@@ -90,7 +108,7 @@ class DirectEnrollment:
             "openid.oa2.code_challenge": self.challenge,
             "language": MARKETPLACES.get(self.domain, "en_US"),
         }
-        return f"https://www.{self.domain}/ap/register?{urlencode(query)}"
+        return f"https://www.{self.domain}{path}?{urlencode(query)}"
 
     def authorization_code(self, pasted_url: str) -> str:
         """Validate locally before sending anything to Amazon; errors omit input."""

@@ -31,7 +31,15 @@ FEATURE_LOCK = "lock"
 FEATURE_INVENTORY = "inventory"
 FEATURE_ACTION = "action"
 FEATURE_BRIGHTNESS = "brightness"
+FEATURE_COLOR = "color"
 FEATURE_COLOR_TEMPERATURE = "colorTemperature"
+FEATURE_PERCENTAGE = "percentage"
+FEATURE_POWER_LEVEL = "powerLevel"
+FEATURE_SPEAKER = "speaker"
+FEATURE_MOTION_SENSOR = "motionSensor"
+FEATURE_LIGHT_SENSOR = "lightSensor"
+FEATURE_SECURITY_PANEL = "securityPanel"
+FEATURE_SECURITY_PANEL_ALERT = "securityPanel.Alert"
 
 # Splits camelCase for the label fallback: "temperatureSensor" -> "temperature Sensor".
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -56,8 +64,40 @@ _PRIMARY_PROPERTIES = {
     FEATURE_LOCK: ("lockState",),
     FEATURE_INVENTORY: ("inventoryLevelValue",),
     FEATURE_ACTION: ("actionStateValue",),
+    # Spellings from the 2026-11-07 schema introspection. `volumeValue` is the query's alias for `Volume.value`, which would clash
+    # with the temperature types' `value { value scale }` (Int against Float).
     FEATURE_BRIGHTNESS: ("brightnessStateValue",),
+    FEATURE_COLOR: ("colorStateValue",),
     FEATURE_COLOR_TEMPERATURE: ("colorTemperatureInKelvinStateValue",),
+    FEATURE_PERCENTAGE: ("percentageValue",),
+    FEATURE_POWER_LEVEL: ("powerLevelValue",),
+    FEATURE_SPEAKER: ("volumeValue",),
+    FEATURE_MOTION_SENSOR: ("detectionStateValue",),
+    FEATURE_LIGHT_SENSOR: ("illuminanceValue",),
+    FEATURE_SECURITY_PANEL: ("armStateValue",),
+    FEATURE_SECURITY_PANEL_ALERT: ("sirenStateValue",),
+}
+
+# A thermostat's allowed setpoint range: `{heating, cooling}`, each a
+# `{minimum, maximum}` pair of `{value, scale}` (schema introspection, 2026-11-07).
+# The schema names its type after a thermostat-configuration feature, so it may
+# arrive on a feature of its own rather than on the thermostat.
+ALLOWED_RANGE_PROPERTY = "thermostatAllowedTemperatureRangeValue"
+
+# Properties whose value sits one field down in an object of its own: a siren's
+# state is `{"state": "OFF", ...}`.
+_NESTED_VALUES = {"sirenStateValue": "state"}
+
+# To and from Kelvin per scale: the formulas of Home Assistant's TemperatureConverter.
+_TO_KELVIN = {
+    "CELSIUS": lambda c: c + 273.15,
+    "FAHRENHEIT": lambda f: (f - 32) / 1.8 + 273.15,
+    "KELVIN": lambda k: k,
+}
+_FROM_KELVIN = {
+    "CELSIUS": lambda k: k - 273.15,
+    "FAHRENHEIT": lambda k: (k - 273.15) * 1.8 + 32,
+    "KELVIN": lambda k: k,
 }
 
 # Tried in order after a type's own spellings, and alone for types not listed above.
@@ -176,7 +216,10 @@ class Feature:
         """
         for prop in self._candidate_properties:
             if prop in self.properties:
-                return _unwrap(self.properties[prop])
+                raw = self.properties[prop]
+                if prop in _NESTED_VALUES and isinstance(raw, dict):
+                    raw = raw.get(_NESTED_VALUES[prop])
+                return _unwrap(raw)
         return None
 
     @property
@@ -223,6 +266,17 @@ class Feature:
         raw = self.properties.get(name)
         return raw.get("scale") if isinstance(raw, dict) else None
 
+    def color_component(self, component: str) -> float | None:
+        """One of a colour's ``hue``, ``saturation`` and ``brightness``, or ``None``.
+
+        The three arrive together in one ``colorStateValue``: hue 0-360,
+        saturation and brightness 0-1, Alexa's fixed rule (ColorController).
+        """
+        color = self.properties.get("colorStateValue")
+        if not isinstance(color, dict):
+            return None
+        return color.get(component)
+
     @property
     def supported_modes(self) -> list[str]:
         """A thermostat's advertised modes, e.g. ``["OFF", "AUTO"]``.
@@ -244,6 +298,11 @@ class Endpoint:
     model: str | None
     serial_number: str | None
     features: dict[str, Feature] = field(default_factory=dict)
+    # Who reports this endpoint to Alexa, as ``endpointReports[].reporter.namespace``
+    # sends it, in wire order: ``SKILL`` (a vendor cloud through a linked skill),
+    # ``AAA`` (registered with Amazon directly), ``ALEXABRIDGE``. A few endpoints
+    # have several reporters.
+    reporters: tuple[str, ...] = ()
 
     def feature(self, name: str, instance: str | None = None) -> Feature | None:
         """Look a feature up by name and instance."""
@@ -252,19 +311,6 @@ class Endpoint:
     def features_named(self, name: str) -> list[Feature]:
         """Every instance of a given feature type, e.g. all ``mode`` features."""
         return [f for f in self.features.values() if f.name == name]
-
-    @property
-    def is_on(self) -> bool | None:
-        """Power state, or ``None`` when the endpoint has no power feature.
-
-        Some endpoints genuinely have none -- the SmartDrape blind is the worked
-        example, and gating discovery on power is why every reference
-        implementation cannot see it (ref/06).
-        """
-        power = self.feature(FEATURE_POWER)
-        if power is None or power.value is None:
-            return None
-        return str(power.value).upper() == "ON"
 
     @property
     def reachable(self) -> bool | None:
@@ -278,27 +324,37 @@ class Endpoint:
             return None
         return str(connectivity.value).upper() == "OK"
 
-    def live_value(self, feature: Feature) -> Any:
-        """Current value, with the power-off sentinel filtered out.
+    def setpoint_bounds(self, feature: Feature, prop: str) -> tuple[float, float] | None:
+        """Alexa's allowed range for one setpoint, in that setpoint's scale, or ``None``.
 
-        When an endpoint's power is ``OFF``, its *writable* features report ``0``
-        -- which is not a member of ``modeOptions`` and sits below the range
-        minimum. It is an unknown sentinel, not a reading. Read-only features
-        keep reporting real values while off, so they are exempt (ref/07, ref/09).
-
-        The comparison is numeric, not textual: ``mode`` reports the sentinel as
-        the string ``"0"`` but ``range`` reports it as the float ``0.0``, and a
-        string test silently lets the latter through as a real reading.
-        Non-numeric values (``"OFF"`` on power and toggle) are never sentinels.
+        Read from the thermostat feature itself, else from any feature of the
+        endpoint that carries it. One range bounds every setpoint. When heating
+        and cooling arrive separately, heating bounds ``lowerSetpoint``,
+        cooling bounds ``upperSetpoint`` and ``targetSetpoint`` takes the union
+        of the two. A device need not send one, so callers keep a fallback.
         """
-        value = feature.value
-        if value is None or not feature.writable or self.is_on is not False:
-            return value
-        try:
-            is_sentinel = float(value) == 0
-        except (TypeError, ValueError):
-            is_sentinel = False
-        return None if is_sentinel else value
+        bounds = feature.properties.get(ALLOWED_RANGE_PROPERTY)
+        if bounds is None:
+            bounds = next(
+                (
+                    other.properties[ALLOWED_RANGE_PROPERTY]
+                    for other in self.features.values()
+                    if other.properties.get(ALLOWED_RANGE_PROPERTY) is not None
+                ),
+                None,
+            )
+        if not isinstance(bounds, dict):
+            return None
+        scale = (feature.property_scale(prop) or feature.scale or "CELSIUS").upper()
+        heating = _temperature_range(bounds.get("heating"), scale)
+        cooling = _temperature_range(bounds.get("cooling"), scale)
+        if heating is None or cooling is None:
+            return heating or cooling
+        if prop == "lowerSetpoint":
+            return heating
+        if prop == "upperSetpoint":
+            return cooling
+        return min(heating[0], cooling[0]), max(heating[1], cooling[1])
 
 
 def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
@@ -309,21 +365,42 @@ def parse_endpoint(raw: dict[str, Any]) -> Endpoint | None:
 
     features: dict[str, Feature] = {}
     for raw_feature in raw.get("features") or []:
+        # A feature Amazon nulled (a never-null field of it came back null) is
+        # skipped, so it cannot fail the poll of every other device.
+        if not isinstance(raw_feature, dict):
+            continue
         parsed = _parse_feature(raw_feature)
         if parsed is not None:
             features[parsed.key] = parsed
 
     return Endpoint(
         endpoint_id=endpoint_id,
-        friendly_name=raw.get("friendlyName") or endpoint_id,
+        friendly_name=_text(raw.get("friendlyNameObject")) or endpoint_id,
         display_category=_get(raw, "displayCategories", "primary", "value"),
-        # model / manufacturer arrive as {value:{text}} wrappers, though a bare
-        # string is tolerated so fixtures and older captures still parse.
+        # The name, model and manufacturer arrive as {value:{text}} wrappers, though
+        # a bare string is tolerated so fixtures and older captures still parse.
         manufacturer=_text(raw.get("manufacturer")),
         model=_text(raw.get("model")),
         serial_number=_text(raw.get("serialNumber")),
         features=features,
+        reporters=_reporters(raw.get("endpointReports")),
     )
+
+
+def _reporters(raw: Any) -> tuple[str, ...]:
+    """Each report's ``reporter.namespace``, in wire order, duplicates kept.
+
+    An entry without a namespace is skipped; a missing or null list gives none.
+    """
+    if not isinstance(raw, list):
+        return ()
+    namespaces = []
+    for report in raw:
+        reporter = report.get("reporter") if isinstance(report, dict) else None
+        namespace = reporter.get("namespace") if isinstance(reporter, dict) else None
+        if namespace is not None:
+            namespaces.append(str(namespace))
+    return tuple(namespaces)
 
 
 def _parse_feature(raw: dict[str, Any]) -> Feature | None:
@@ -331,7 +408,7 @@ def _parse_feature(raw: dict[str, Any]) -> Feature | None:
     if not name:
         return None
     operations = frozenset(
-        op["name"] for op in raw.get("operations") or [] if op.get("name")
+        op["name"] for op in raw.get("operations") or [] if isinstance(op, dict) and op.get("name")
     )
     return Feature(
         name=name,
@@ -389,6 +466,32 @@ def _unwrap(value: Any) -> Any:
             return value["status"]
         return None
     return value
+
+
+def _temperature_range(raw: Any, scale: str) -> tuple[float, float] | None:
+    """A ``{minimum, maximum}`` pair of ``{value, scale}`` as floats in ``scale``.
+
+    ``None`` when either end is missing or unreadable, or the pair is inverted.
+    A range sent in another scale than the setpoint's is converted.
+    """
+    if not isinstance(raw, dict) or scale not in _FROM_KELVIN:
+        return None
+    ends = []
+    for end in (raw.get("minimum"), raw.get("maximum")):
+        if not isinstance(end, dict):
+            return None
+        own = str(end.get("scale") or scale).upper()
+        try:
+            value = float(end["value"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if own != scale:
+            if own not in _TO_KELVIN:
+                return None
+            value = _FROM_KELVIN[scale](_TO_KELVIN[own](value))
+        ends.append(value)
+    low, high = ends
+    return (low, high) if low <= high else None
 
 
 def _text(value: Any) -> str | None:

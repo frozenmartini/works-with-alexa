@@ -69,7 +69,11 @@ class WorksWithAlexaSelect(WorksWithAlexaEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Selected label, or None when the device reports the off sentinel."""
+        """Selected label, or None when Alexa reports a value with no option.
+
+        A device that is off may report ``"0"``, which is not among its options;
+        the value stays visible as ``alexa_value``.
+        """
         value = self.reading
         if value is None:
             return None

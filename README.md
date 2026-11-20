@@ -21,11 +21,13 @@ One entity per Alexa feature, for the devices you pick on the integration's opti
 | `power`, `toggle` | `switch` | Power is named "Power"; toggles take Alexa's label (Auto, Mute, Oscillate…) |
 | `mode` | `select` | Options are Alexa's labels (Low/Medium/High/Turbo, Exhaust/Direct, Auto/Natural/Normal/Sleep) |
 | `range`, writable | `number` | Bounds and step are the device's own (0–6, 60–90, 0–100 Percent…) |
-| `brightness`, writable | `number` | 0–100 %, step 1. Alexa gives no bounds for it; these are the API's own |
-| `colorTemperature`, writable | `number` | 1000–10000 K, step 1. Alexa gives no bounds for it; these are the API's own, and a device may keep only some values |
-| `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Alexa gives no setpoint bounds, so these are fixed: 40–100 °F step 1, 5–38 °C step 0.5, 278–311 K step 0.5 |
+| `brightness`, `percentage`, `powerLevel`, writable | `number` | Whole numbers 0–100, Alexa's own rule for these (no device declares a range); brightness and percentage in % |
+| `colorTemperature`, writable | `number` | 1,000–10,000 K, Alexa's own rule; a bulb that covers less goes to its nearest value |
+| `color`, writable | three `number`s: "Color Hue", "Color Saturation", "Color Brightness" | Alexa's own rule: hue 0–360, saturation and brightness 0–1. Setting one sends all three; shown as Alexa reports them, even while the light is off |
+| `thermostat` | one `number` per setpoint + a "Thermostat Mode" `select` | Target, lower and upper setpoints as the device reports them; modes as Alexa lists them. Bounds are Alexa's allowed range when the device sends one, otherwise 40–120 °F step 1, 5–50 °C step 0.1, 278–323 K step 0.1 |
 | `lock` | `lock` | Locked / unlocked / jammed |
-| anything read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING |
+| `motionSensor` | `binary_sensor` | Motion: on when Alexa reports DETECTED, read at each poll |
+| anything else read-only with a value | `sensor` | Temperatures carry °F, °C or K as Alexa reports; a vacuum's action status reads IDLE / RUNNING; a speaker's volume, a light sensor's reading (no unit, since Alexa gives none), a security panel's arm state and its siren state |
 
 Nothing is assembled here: whole devices (a fan from a power switch, a speed select and a
 direction select, say) are built from these entities by the companion Kitbash integration.
@@ -36,17 +38,30 @@ system, which the Alexa app lists as Other, is mapped from its reported features
 like any other device. Only endpoints with supported capabilities are offered,
 regardless of category or manufacturer; scene-trigger endpoints are never
 offered as devices. Devices
-that yield only sensors are marked read-only in the picker. An application endpoint with power controls can be selectable;
+that yield only sensors or binary sensors are marked read-only in the picker. An application endpoint with power controls can be selectable;
 an Echo Show with a temperature value can yield a sensor. Scenes have a separate
 picker during setup and follow the device picker in Options. They start entirely
 unselected, including on existing installations. Selected scenes appear as individual `button` entities grouped
 under a single **Scenes** device card. Pressing a button activates its Alexa scene;
 it has no on/off state. Adding all devices does not select any scenes.
 
-Raw endpoint entities carry a `reachable` attribute (Alexa's own connectivity flag) when
-Alexa reports the device's connectivity. While a device's power reports off, its writable
-range numbers and mode selects read unknown rather than the `0` Alexa reports. Thermostat
-setpoints and Thermostat Mode always show what Alexa reports.
+Every value shows as Alexa reports it, whether the device is on or off. Some devices
+report `0` for every setting while off: a number then reads `0`, even below its minimum,
+and a mode select reads unknown because `0` is not one of its options. Holding a last
+value while a device is off is left to whatever consumes these entities. A switch is on
+for `ON`, off for `OFF`, and unknown for anything else.
+
+Raw endpoint entities also carry these attributes, each omitted when Alexa sends nothing
+for it:
+
+| Attribute | Meaning |
+|---|---|
+| `reachable` | Alexa's own connectivity flag. Not tied to availability, and not proof the device is live |
+| `alexa_value` | Alexa's last reported value for what the entity shows, before Home Assistant's mapping (a mode's `"0"`, a lock state Home Assistant has no name for). Never a pending write. Not recorded on numbers and sensors, where it repeats the state |
+| `alexa_reporters` | Who reports the device to Alexa, as Alexa sends it: `SKILL` (the maker's cloud, through a linked Alexa skill), `AAA` (registered with Amazon directly), `ALEXABRIDGE`. A list, since a few devices have several. Not recorded |
+
+A skill-linked device's values and reachability are what its maker's cloud last told
+Alexa: a device unplugged for a long time can keep reporting its last state.
 
 After setup, open the entry's **Options** (gear) in Settings → Devices & services →
 Works with Alexa. **Add, edit or remove devices** opens the device checkboxes,
@@ -120,11 +135,12 @@ triggers yield nothing. The rules:
 - `power`/`toggle` with on and off commands → switch.
 - `mode` with `setMode` and advertised options → select, preserving Alexa's labels.
 - `range` with `setRangeValue` and bounds → number, preserving bounds and step.
-- `brightness` with `setBrightness` → number, 0–100 %.
-- `colorTemperature` with `setColorTemperature` → number, in kelvin.
+- `brightness`, `colorTemperature`, `percentage`, `powerLevel` with their set
+  command → number, with Alexa's fixed bounds.
+- `color` with `setColor` → a number each for hue, saturation and brightness.
 - Thermostat setpoints/modes → numbers/selects when their setters are advertised.
 - `lock` with lock/unlock commands → lock.
-- Read-only values and action status → sensors.
+- Read-only motion → binary sensor; other read-only values and action status → sensors.
 
 Thus a fan's speed can be a select or a number depending on its capability.
 Anthem and Anthem Plus expose their advertised power controls as switches even
@@ -162,9 +178,9 @@ account automations and do not carry endpoint feature metadata.
 | `instance` | Original instance (including numeric values), or `null` |
 | `label` | Alexa's feature label, with the existing readable fallback when absent; unaffected by HA entity renaming |
 | `operations` | Advertised operation names, as a sorted list; these may include operations the entity does not implement |
-| `writable` | Whether this specific entity supports writing with its advertised commands; always `false` for sensors, including action-status sensors |
+| `writable` | Whether this specific entity supports writing with its advertised commands; always `false` for sensors and binary sensors, including action-status sensors |
 | `ordered` | `true` for explicitly ORDERED mode features, `false` for explicitly UNORDERED ones; `null` when unknown or not a mode feature |
-| `property` | Thermostat child property (`targetSetpoint`, `lowerSetpoint`, `upperSetpoint`, or `thermostatMode`); `null` otherwise |
+| `property` | Thermostat child property (`targetSetpoint`, `lowerSetpoint`, `upperSetpoint`, or `thermostatMode`), or colour component (`hue`, `saturation`, `brightness`); `null` otherwise |
 | `role` | Optional semantic hint, published only when supported by the capability, original label, or semantic instance; omitted when uncertain or conflicting |
 
 For example, an oscillation-angle number can publish:
@@ -201,12 +217,12 @@ thermostat feature has no assumed temperature role. Consumers should identify
 an entity through the HA registry and use `property` to distinguish thermostat
 children, rather than treating the feature key alone as an entity identifier.
 
-The dictionary merges with existing attributes such as `reachable`
-and `reported_unit`. It contains no credentials or raw account payloads. It does
+The dictionary merges with existing attributes such as `reachable`,
+`alexa_value`, `alexa_reporters` and `reported_unit`. It contains no credentials or raw account payloads. It does
 not change entity unique IDs, device grouping, select labels, numeric bounds,
 units, or commands. If an endpoint disappears, its entities become unavailable, and
 Home Assistant leaves out an unavailable entity's extra state attributes, so
-`wwa_feature` and `reachable` are absent from state until the endpoint returns.
+`wwa_feature` and the other attributes are absent from state until the endpoint returns.
 Check availability before writing.
 
 ## What is verified
@@ -214,15 +230,13 @@ Check availability before writing.
 | Operation | Status |
 |---|---|
 | Discovery and capability classification | Verified with live read-only queries |
-| Direct browser enrollment, phone 2FA and token refresh | Verified live in separate experimental storage |
+| Direct browser enrollment, phone 2FA and token refresh | Verified live in separate experimental storage. Outside amazon.com, the sign-in link (`/ap/signin` with the marketplace handle) is verified live on amazon.it only |
 | Scene activation | Verified live. A scene button asks Alexa to run the same scene the Alexa app runs, so any scene that works from the Alexa app works from its button. Tested with ShadeAuto scenes: the vanes physically closed. Amazon's reply does not report whether the device acted |
 | Scene buttons, options management and development logs | Verified live: scene buttons, adding, editing and removing devices and scenes, and scene acknowledgements in the development logs |
 | Capability mapping and optimistic concurrency/expiry | Verified live: mapping and optimistic confirmation after Core restarts. Overlapping-failure handling is verified by automated tests |
 | Fan on/off, speed (mode), direction, toggles, range numbers | Verified live |
 | Thermostat setpoints and mode | Verified live from Home Assistant on an ecobee: mode, lower and upper setpoints confirmed by the next poll. In AUTO, a target-setpoint write moved both lower and upper on the device, and Alexa does not report the target back |
 | Lock / unlock | Verified live from Home Assistant on a Lockly smart lock: both commands accepted, the door actuated, and the next poll confirmed the state |
-| Brightness | Verified live from Home Assistant on PureOptics LED under-cabinet lights, with the same change on v0.1.4: levels confirmed by the next poll, and both lights visibly dimmed |
-| Color temperature | Verified live the same way on the same lights, which visibly changed. They kept 2200, 2700, 4000, 5500 and 7000 K; other values read back as one of those |
 | Vacuum (Roborock) | Verified live: the power switch, and cleaning and dock status as sensors. Alexa's cleaning actions are read as status, not sent |
 | Kohler Anthem and Anthem Plus shower system (Alexa type Other) | Verified live: every entity mapped from their reported features |
 

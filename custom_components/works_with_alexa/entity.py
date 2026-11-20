@@ -8,8 +8,10 @@ fan speed (ref/06, ref/07), so it is threaded through every write here.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from homeassistant.const import UnitOfTemperature
@@ -42,6 +44,17 @@ TEMPERATURE_UNITS = {
     "KELVIN": UnitOfTemperature.KELVIN,
 }
 
+# Alexa's own value for what an entity shows, and who reports the endpoint to
+# Alexa. Neither is interpreted here.
+ATTR_ALEXA_VALUE = "alexa_value"
+ATTR_ALEXA_REPORTERS = "alexa_reporters"
+
+# The reporters do not change between polls, so no entity records them. Where
+# the state already is Alexa's value (numbers and sensors), its copy is not
+# recorded either; elsewhere it is the value Home Assistant could not show.
+UNRECORDED = frozenset({ATTR_ALEXA_REPORTERS})
+UNRECORDED_WITH_VALUE = UNRECORDED | {ATTR_ALEXA_VALUE}
+
 
 def selected_entities(
     coordinator: WorksWithAlexaCoordinator, platform: str,
@@ -59,12 +72,14 @@ def _same_value(reported: Any, assumed: Any) -> bool:
 
     Numeric where both sides are numeric: a setpoint sent as ``74`` reads back
     as ``74.0``, and comparing those as text would never match, leaving the
-    assumption to sit until it timed out instead of reconciling.
+    assumption to sit until it timed out instead of reconciling. Close, not
+    equal: Alexa stores some values as 32-bit floats, so a setpoint written as
+    37.7 reads back as 37.70000076293945. The tolerance is far below any step.
     """
     if reported is None or assumed is None:
         return reported is assumed
     try:
-        return float(reported) == float(assumed)
+        return math.isclose(float(reported), float(assumed), rel_tol=1e-6, abs_tol=1e-9)
     except (TypeError, ValueError):
         return str(reported) == str(assumed)
 
@@ -83,6 +98,7 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
     """One feature of one endpoint, or one property of that feature, as Home Assistant sees it."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = UNRECORDED
     _wwa_operations: frozenset[str] = frozenset()
 
     def __init__(
@@ -130,13 +146,17 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Discovery metadata and reachability, independent of availability.
+        """Discovery metadata, reachability, reporters and Alexa's value.
 
-        ``connectivity`` is the signal behind the Alexa app's "device is
-        unresponsive", but on 2026-09-13 both Dreo fans reported UNREACHABLE
-        while also reporting live-looking state. Until that is understood, a
-        wrong "unavailable" would block control, whereas a wrong "available"
-        only produces a failed command with a clear error.
+        Reachability is independent of availability. ``connectivity`` is the
+        signal behind the Alexa app's "device is unresponsive", but on
+        2026-09-13 both Dreo fans reported UNREACHABLE while also reporting
+        live-looking state. Until that is understood, a wrong "unavailable"
+        would block control, whereas a wrong "available" only produces a failed
+        command with a clear error.
+
+        ``alexa_reporters`` and ``alexa_value`` are omitted when Alexa sends
+        nothing for them.
         """
         endpoint = self.endpoint
         feature = self.feature or self._source
@@ -149,6 +169,10 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         }
         if endpoint is not None and endpoint.reachable is not None:
             attrs["reachable"] = endpoint.reachable
+        if endpoint is not None and endpoint.reporters:
+            attrs[ATTR_ALEXA_REPORTERS] = list(endpoint.reporters)
+        if (value := self._alexa_value()) is not None:
+            attrs[ATTR_ALEXA_VALUE] = value
         return attrs
 
     @property
@@ -165,18 +189,35 @@ class WorksWithAlexaEntity(CoordinatorEntity[WorksWithAlexaCoordinator]):
         return self._reported()
 
     def _reported(self) -> Any:
-        """What the endpoint currently reports for this entity.
+        """What the endpoint currently reports for this entity, unwrapped.
 
-        A whole feature reads with the power-off sentinel filtered out. A
-        property of a feature (the thermostat sub-entities) reads that one
-        property, unfiltered.
+        A whole feature reads its value; a property of a feature (the thermostat
+        sub-entities) reads that one property. Nothing is filtered: a device
+        that is off shows whatever Alexa reports for it.
         """
         feature = self.feature
         if feature is None:
             return None
         if self._prop:
             return feature.property_value(self._prop)
-        return self.endpoint.live_value(feature)
+        return feature.value
+
+    def _alexa_value(self) -> Any:
+        """Alexa's last report for this entity, never a pending local write.
+
+        Unwrapped where the shape is known, else the property as Alexa sent it,
+        so a value Home Assistant cannot show (a mode outside the options, a
+        lock state outside its states) stays visible. A container is a copy, so
+        a consumer cannot change the poll through a state attribute.
+        """
+        reported = self._reported()
+        if reported is None and (feature := self.feature) is not None:
+            reported = self._as_sent(feature)
+        return deepcopy(reported) if isinstance(reported, (dict, list)) else reported
+
+    def _as_sent(self, feature: Feature) -> Any:
+        """The property behind this entity as Alexa sent it, for a shape not unwrapped."""
+        return feature.properties.get(self._prop) if self._prop else feature.raw_value
 
     def _assume(self, value: Any) -> _OptimisticState:
         """Hold a value locally until the device confirms it or it goes stale."""
